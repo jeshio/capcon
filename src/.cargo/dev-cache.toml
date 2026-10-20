@@ -1,0 +1,6 @@
+# Applies only to src/target/quick/incremental; compiled dependencies,
+# app bundles, project/media caches and cached API responses are separate.
+incremental_budget_gib = 8
+# Age is measured from compiler writes; the pinned UI cache is exempt.
+unused_days = 14
+minimum_free_gib = 8

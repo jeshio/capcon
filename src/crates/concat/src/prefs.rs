@@ -46,6 +46,12 @@ pub struct Preferences {
     pub ui_scale: Option<u32>,
     /// The chosen transcriber model id, e.g. "base.en".
     pub transcriber_model: Option<String>,
+    /// The captions provider and optional language; API keys live in the
+    /// system credential store, never in this JSON or a project.
+    pub captions_elevenlabs: bool,
+    pub captions_language: Option<String>,
+    /// Text cleanup for newly transcribed captions, on desktop and phone.
+    pub captions_cleanup: concat_speech::cleanup::CaptionCleanup,
     /// The chosen speech model id.
     pub tts_model: Option<String>,
     /// The chosen Kokoro speaker id.
@@ -275,6 +281,18 @@ impl Preferences {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caption_cleanup_defaults_apply_to_old_settings_and_disabled_options_are_kept() {
+        let mut prefs: Preferences = serde_json::from_str("{\"captionsElevenlabs\":true}").unwrap();
+        assert!(prefs.captions_cleanup.clean_speech);
+        assert!(prefs.captions_cleanup.strip_punctuation);
+        prefs.captions_cleanup.clean_speech = false;
+        prefs.captions_cleanup.strip_punctuation = false;
+        let restored: Preferences =
+            serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+        assert_eq!(restored.captions_cleanup, prefs.captions_cleanup);
+    }
 
     #[test]
     fn the_last_project_location_survives_loading_and_saving() {

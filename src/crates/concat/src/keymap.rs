@@ -19,6 +19,10 @@
 //! the event is seen, and [`crate::platform::keys`] writes it back the
 //! way that platform does.
 //!
+//! The native keyboard boundary (`keyboard.rs`) names shortcut keys by their
+//! physical US positions. Both capture and dispatch therefore see the same
+//! chord in every layout; text entered into a field keeps its own language.
+//!
 //! Some keys never enter the table: the menu bar's F10 and Alt+F/E/V,
 //! and the window's Ctrl+O/W/Q stay `KeyBinding`s in app.slint, ahead
 //! of everything this module sees. [`reserved`] names their chords so a

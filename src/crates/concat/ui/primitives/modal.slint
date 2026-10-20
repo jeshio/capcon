@@ -698,6 +698,14 @@ export component Field inherits Rectangle {
 
     callback edited(text: string);
 
+    /// A credential's Paste button replaces the complete value, using
+    /// TextInput's normal clipboard, masking and edited notification.
+    public function paste-value() {
+        input.focus();
+        input.select-all();
+        input.paste();
+    }
+
     // A layout owns its children's size on both axes: it reads min, preferred
     // and max, and a bare `height` is none of those. Without a max the row
     // stretches this to whatever the tallest thing beside it made it, which is
@@ -760,6 +768,7 @@ export component Field inherits Rectangle {
         selection-foreground-color: Theme.on-accent;
 
         edited => { root.edited(self.text); }
+
     }
 
     if root.draft == "" && !input.has-focus: Text {

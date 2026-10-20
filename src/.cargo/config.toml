@@ -12,7 +12,11 @@
 # profile - it was silently switching off the `quick` profile's
 # incremental, which is the one build that wants it.
 
-# `cargo dev`: the window, built to try a change in. See `[profile.quick]`
-# in Cargo.toml for what it is and why it is quick.
+# ./dev run/build also enforces .cargo/dev-cache.toml's cache budget.
+# These plain Cargo aliases share its profile; checks/tests avoid creating
+# an additional multi-gigabyte incremental cache for the generated UI.
 [alias]
-dev = "run --bin concat --profile quick"
+dev = "run -p concat --bin concat --profile quick"
+dev-build = "build -p concat --bin concat --profile quick"
+dev-test = "test --profile quick --config profile.quick.package.concat.incremental=false"
+dev-check = "clippy --profile quick --config profile.quick.package.concat.incremental=false"

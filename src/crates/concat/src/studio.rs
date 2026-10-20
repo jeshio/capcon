@@ -691,6 +691,8 @@ pub struct Models {
     pub recents: Rc<VecModel<RecentProjectData>>,
     /// The Text page's presets, published once from the loaded list.
     pub text_presets: Rc<VecModel<TextPresetData>>,
+    /// The same presets, in the same order, for the Text inspector's picker.
+    pub text_style_names: Rc<VecModel<SharedString>>,
     /// The Latin ones, for the Text page's Styles shelf.
     pub style_presets: Rc<VecModel<TextPresetData>>,
     /// The rest, by the writing they are for, for its Languages shelf.
@@ -763,6 +765,7 @@ impl Models {
             dividers: Rc::new(VecModel::default()),
             recents: Rc::new(VecModel::default()),
             text_presets: Rc::new(VecModel::default()),
+            text_style_names: Rc::new(VecModel::default()),
             style_presets: Rc::new(VecModel::default()),
             language_presets: Rc::new(VecModel::default()),
             font_families: Rc::new(VecModel::default()),
@@ -924,8 +927,8 @@ pub struct Studio {
     /// Counts every change to the document. What the flattened clip list
     /// below is keyed on, so a frame of an unchanged document reuses it.
     revision: u64,
-    /// The last flattening of the document for the monitor - titles
-    /// included - and the revision and output size it was made at. Shared
+    /// The last media flattening for the monitor, before worker-painted
+    /// titles are added, and the revision and output size it was made at. Shared
     /// with the monitor by pointer, so it can keep its plan for as long as
     /// the list is the same one.
     flat: Option<(
@@ -2872,11 +2875,11 @@ impl Studio {
         ));
     }
 
-    /// What the monitor draws at the playhead: the document flattened with
-    /// its titles, plus the frame's own additions - a look being shown, a
+    /// The media and effects for the monitor, before its worker adds
+    /// titles. Includes the frame's own additions - a look being shown, a
     /// cutout being painted - and the session's settings. None without a
     /// project.
-    pub fn preview_clips(
+    pub fn preview_base(
         &mut self,
     ) -> Option<(
         std::sync::Arc<Vec<concat_export::ExportClip>>,
@@ -2906,51 +2909,11 @@ impl Studio {
         let clips = if cached {
             std::sync::Arc::clone(&self.flat.as_ref().expect("checked").3)
         } else {
-            let mut clips = concat_export::flatten::flatten_timeline_in(
+            let clips = concat_export::flatten::flatten_timeline_in(
                 self.project(),
                 None,
                 Some(&project_dir),
             );
-            // Titles, painted to pictures and rejoined; see concat-host's titles.
-            if self.echo.is_some() {
-                // A change in flight: the titles are painted in memory at
-                // the monitor's size and handed to it as pixels - no file
-                // per pointer step - and the blocks they report are scaled
-                // back up to the output's terms, which the stage measures
-                // in. Nothing is written until the change is committed.
-                let (shown_w, shown_h) = crate::panes::monitor::MonitorPane::frame_size(
-                    self.quality_of(),
-                    (width, height),
-                );
-                let scale = f64::from(shown_w) / f64::from(width);
-                let up = |px: u32| (f64::from(px) / scale).round() as u32;
-                let up_off = |px: i32| (f64::from(px) / scale).round() as i32;
-                for title in self
-                    .host
-                    .titles
-                    .clips_live(self.project(), shown_w, shown_h)
-                {
-                    self.title_blocks.insert(
-                        title.clip_id,
-                        (
-                            (up(title.block.0), up(title.block.1)),
-                            (up_off(title.offset.0), up_off(title.offset.1)),
-                        ),
-                    );
-                    if let Some(frame) = title.frame {
-                        self.host
-                            .monitor
-                            .hold_still(std::path::Path::new(&title.clip.path), frame);
-                    }
-                    clips.push(title.clip);
-                }
-            } else {
-                for title in self.host.titles.clips(self.project(), width, height) {
-                    self.title_blocks
-                        .insert(title.clip_id, (title.block, title.offset));
-                    clips.push(title.clip);
-                }
-            }
             let clips = std::sync::Arc::new(clips);
             if self.echo.is_none() {
                 self.flat = Some((self.revision, width, height, std::sync::Arc::clone(&clips)));
@@ -2969,7 +2932,8 @@ impl Studio {
                 .iter()
                 .map(|flat| flat.track)
                 .max()
-                .map_or(0, |top| top + 1);
+                .map_or(0, |top| top + 1)
+                .max(self.timeline().tracks.len());
             own.get_or_insert_with(|| (*clips).clone())
                 .push(concat_export::ExportClip {
                     muted: true,
@@ -5451,6 +5415,62 @@ impl Studio {
         }
     }
 
+    /// A ready-made look for the selected titles, keeping each one's words
+    /// and placement. The preset's font joins the project in the same step.
+    pub fn apply_title_preset(&mut self, index: i32) {
+        self.flush_commit();
+        let Some(preset) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.text_presets.get(index))
+        else {
+            return;
+        };
+        let mut commands = crate::caption_style::commands(
+            self.timeline(),
+            &self.edit_targets(),
+            &preset.style,
+            |track| self.locked(track),
+        );
+        if commands.is_empty() {
+            return;
+        }
+        if let Some((family, path)) = presets::install_font(&self.host.dirs, preset) {
+            commands.insert(0, Command::AddFont { family, path });
+        }
+        self.apply(Command::Batch { commands });
+    }
+
+    /// Copy the selected title's look to all text clips on its track.
+    /// Flush a field's pending edit first, so the copied style is what the
+    /// person has just chosen. No selection changes and one undo step.
+    pub fn apply_title_style_to_track(&mut self) {
+        self.flush_commit();
+        let targets =
+            crate::caption_style::track_targets(self.timeline(), &self.edit_targets(), |track| {
+                self.locked(track)
+            });
+        let Some(style) = self
+            .edit_targets()
+            .first()
+            .and_then(|id| self.clip(id))
+            .filter(|clip| clip.kind == model::ClipKind::Text)
+            .map(|clip| clip.text.clone().unwrap_or_default())
+        else {
+            return;
+        };
+        let commands = crate::caption_style::commands(self.timeline(), &targets, &style, |track| {
+            self.locked(track)
+        });
+        if commands.is_empty() {
+            return;
+        }
+        self.apply(Command::Batch { commands });
+        self.notify(
+            &tf("textPanel.styleAppliedToCaptions", &[&targets.len()]),
+            false,
+        );
+    }
+
     /// The selected title's look becomes the one new titles start from,
     /// and the one generated captions are set in: its family, weight,
     /// colours, stroke, shadow and background, never its words. Kept in
@@ -7544,9 +7564,11 @@ impl Studio {
         if self.playing {
             self.pause();
         }
-        let Some((clips, settings)) = self.preview_clips() else {
+        let Some((clips, settings)) = self.preview_base() else {
             return;
         };
+        let title_project = self.source.is_none().then(|| self.project().clone());
+        let titles = std::sync::Arc::clone(&self.host.titles);
         let Some(project_dir) = self
             .session
             .as_ref()
@@ -7599,6 +7621,25 @@ impl Studio {
                 studio.notify(&t("studio.savingFrame"), false);
                 spawn_in_project(
                     move || -> Result<concat_host::media::MediaSummary, String> {
+                        let clips = if let Some(project) = title_project {
+                            let mut clips = (*clips).clone();
+                            for title in titles.clips_live_at(
+                                &project,
+                                width,
+                                height,
+                                spec.time,
+                                &std::sync::atomic::AtomicBool::new(false),
+                            ) {
+                                if let Some(frame) = title.frame {
+                                    monitor
+                                        .hold_still(std::path::Path::new(&title.clip.path), frame);
+                                }
+                                clips.push(title.clip);
+                            }
+                            std::sync::Arc::new(clips)
+                        } else {
+                            clips
+                        };
                         let pixels = monitor.frame(clips, &settings, spec)?;
                         let image = image::RgbaImage::from_raw(width, height, pixels)
                             .ok_or_else(|| "the frame came back the wrong size".to_owned())?;
@@ -8345,6 +8386,8 @@ impl Studio {
         self.art_failed.clear();
         self.art_stamp = None;
         self.proxied.clear();
+        self.captions.cancel_pending();
+        self.host.transcriber.cancel();
         self.captions.running = false;
         self.captions.pace = Default::default();
         self.speech.running = false;
@@ -10204,6 +10247,12 @@ impl Studio {
             present: true,
             batch: targets.len() as i32,
             batch_volume,
+            text_track_count: crate::caption_style::track_targets(
+                self.timeline(),
+                &targets,
+                |track| self.locked(track),
+            )
+            .len() as i32,
             frame_width: self.output_size().0 as i32,
             frame_height: self.output_size().1 as i32,
             id: clip.id.as_str().into(),
@@ -10774,6 +10823,10 @@ impl Studio {
         sync(
             &models.language_presets,
             cards.iter().filter(|card| !latin(card)).cloned().collect(),
+        );
+        sync(
+            &models.text_style_names,
+            cards.iter().map(|card| card.name.clone()).collect(),
         );
         sync(&models.text_presets, cards);
 

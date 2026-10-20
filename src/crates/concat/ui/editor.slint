@@ -166,6 +166,11 @@ export global Editor {
     /// The Text tab's "Use for new titles": the selected title's look
     /// becomes the one new titles and captions start from.
     callback text-style-default();
+    /// Ready-made looks for existing titles and captions.
+    in-out property <[string]> text-style-names;
+    callback text-style-preset(index: int);
+    /// Copy the selected title's look to the text clips on its track.
+    callback text-style-track();
 
     // The effect catalogue's shelves, published once, and the selected
     // clip's two chains with a row per parameter. See PresetStack.

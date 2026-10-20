@@ -345,6 +345,8 @@ export struct SelectedClipData {
     batch: int,
     /// Only the volume control is available for this selection.
     batch-volume: bool,
+    /// Text clips on the selection's one unlocked track; zero if ambiguous.
+    text-track-count: int,
     id: string,
     /// the output frame's size, so a fraction can be shown in pixels
     frame-width: int,

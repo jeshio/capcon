@@ -549,6 +549,25 @@ impl Transcriber {
             .collect())
     }
 
+    /// Cloud transcription shares Whisper's job slot and cancellation.
+    pub fn transcribe_elevenlabs(
+        &self,
+        request: &TranscribeRequest,
+        key: &crate::elevenlabs::ApiKey,
+        options: crate::elevenlabs::Options<'_>,
+        cancel: Arc<AtomicBool>,
+        progress: impl FnMut(JobStage),
+    ) -> Result<Vec<Segment>, String> {
+        let job = self.gate.begin_with_cancel("transcription", cancel)?;
+        // An API run needs no local model, including the one retained by a
+        // previous Whisper run. Reclaim it before preparing the audio.
+        *self
+            .model
+            .lock()
+            .map_err(|_| "transcriber state poisoned".to_owned())? = None;
+        crate::elevenlabs::transcribe(request, key, options, job.cancel_flag(), progress)
+    }
+
     /// Asks the running transcription to stop at its next check.
     pub fn cancel(&self) {
         self.gate.cancel();

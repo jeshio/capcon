@@ -19,6 +19,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use concat_core::frame::Frame;
@@ -82,6 +83,9 @@ pub struct Titles {
     /// most recently asked for of the rest, so a width dragged back and
     /// forth over the same values paints each once.
     live: Mutex<LivePaintings>,
+    /// A complete live pass stays together even when an old project's
+    /// cancelled worker overlaps the next project's first request.
+    live_pass: Mutex<()>,
 }
 
 /// The live paintings kept, in bytes of pixels, beyond the ones the
@@ -142,6 +146,17 @@ impl LivePaintings {
         self.pass += 1;
     }
 
+    /// Protect every painting this pass will need before inserting its
+    /// first miss. Otherwise an edited early title evicts later titles
+    /// before the traversal reaches them.
+    fn pin(&mut self, keys: impl IntoIterator<Item = u64>) {
+        for key in keys {
+            if let Some(painting) = self.kept.get_mut(&key) {
+                painting.used = self.pass;
+            }
+        }
+    }
+
     /// The painting under `key`, now the most recently used.
     fn get(&mut self, key: u64) -> Option<(Art, Arc<Frame>)> {
         let pass = self.pass;
@@ -200,6 +215,7 @@ impl Titles {
             loaded_files: Mutex::new(HashSet::new()),
             memo: Mutex::new(HashMap::new()),
             live: Mutex::new(LivePaintings::new(LIVE_BYTES, LIVE_CEILING)),
+            live_pass: Mutex::new(()),
         }
     }
 
@@ -207,7 +223,19 @@ impl Titles {
     /// each, for a `width` × `height` frame. One that fails to paint is left
     /// out and said once on stderr; the rest of the edit still renders.
     pub fn clips(&self, project: &Project, width: u32, height: u32) -> Vec<TitleClip> {
-        self.clips_with(project, width, height, false)
+        self.clips_with(project, width, height, false, None, None)
+    }
+
+    /// Full-resolution title preparation on an export worker, stopping
+    /// between paintings when the export is cancelled.
+    pub fn clips_cancellable(
+        &self,
+        project: &Project,
+        width: u32,
+        height: u32,
+        cancel: &AtomicBool,
+    ) -> Vec<TitleClip> {
+        self.clips_with(project, width, height, false, None, Some(cancel))
     }
 
     /// [`Titles::clips`] for a monitor showing a change as it is made:
@@ -217,16 +245,77 @@ impl Titles {
     /// touches the disk, which is what makes a drag smooth: a PNG per
     /// pointer step, encoded, written and decoded again, was the lag.
     pub fn clips_live(&self, project: &Project, width: u32, height: u32) -> Vec<TitleClip> {
-        self.clips_with(project, width, height, true)
+        self.clips_with(project, width, height, true, None, None)
     }
 
-    fn clips_with(&self, project: &Project, width: u32, height: u32, live: bool) -> Vec<TitleClip> {
-        if live {
-            self.live.lock().unwrap_or_else(|e| e.into_inner()).begin();
+    /// Only visible titles at `time`, painted in memory at the monitor's
+    /// resolution. Call on a worker; cancellation stops between paintings.
+    /// Export continues to use [`Titles::clips`] at full resolution.
+    pub fn clips_live_at(
+        &self,
+        project: &Project,
+        width: u32,
+        height: u32,
+        time: f64,
+        cancel: &AtomicBool,
+    ) -> Vec<TitleClip> {
+        self.clips_with(project, width, height, true, Some(time), Some(cancel))
+    }
+
+    fn clips_with(
+        &self,
+        project: &Project,
+        width: u32,
+        height: u32,
+        live: bool,
+        time: Option<f64>,
+        cancel: Option<&AtomicBool>,
+    ) -> Vec<TitleClip> {
+        let cancelled = || cancel.is_some_and(|flag| flag.load(Ordering::Relaxed));
+        if cancelled() {
+            return Vec::new();
         }
+        let _pass = live.then(|| self.live_pass.lock().unwrap_or_else(|e| e.into_inner()));
         let timeline = project.active();
+        let wanted = |clip: &&Arc<concat_project::model::Clip>| {
+            time.is_none_or(|time| {
+                clip.start <= time
+                    && time < clip.start + clip.duration
+                    && timeline
+                        .tracks
+                        .iter()
+                        .any(|track| track.id == clip.track_id && track.visible)
+            })
+        };
+        if live {
+            let keys = timeline
+                .clips
+                .iter()
+                .filter(wanted)
+                .filter_map(|clip| match clip.kind {
+                    ModelClipKind::Text => Some(key_of(
+                        project,
+                        Painting::Title(&clip.text.clone().unwrap_or_default()),
+                        width,
+                        height,
+                    )),
+                    ModelClipKind::Shape => Some(key_of(
+                        project,
+                        Painting::Shape(&clip.shape.clone().unwrap_or_default()),
+                        width,
+                        height,
+                    )),
+                    _ => None,
+                });
+            let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+            live.begin();
+            live.pin(keys);
+        }
         let mut out = Vec::new();
-        for clip in &timeline.clips {
+        for clip in timeline.clips.iter().filter(wanted) {
+            if cancelled() {
+                break;
+            }
             let (text, shape);
             let painting = match clip.kind {
                 ModelClipKind::Text => {
@@ -794,6 +883,111 @@ mod tests {
             })
             .count();
         assert_eq!(repainted, 0, "of {count}");
+    }
+
+    #[test]
+    fn editing_the_first_title_does_not_repaint_the_rest_past_the_budget() {
+        let dirs = scratch("live_edit_first");
+        let mut editor = Editor::new();
+        for index in 0..5 {
+            editor
+                .apply(Command::AddShapeClip {
+                    above: false,
+                    track_id: None,
+                    start: index as f64,
+                    style: Some(ShapeStyle {
+                        size: 0.2 + index as f64 * 0.05,
+                        ..Default::default()
+                    }),
+                    duration: Some(1.0),
+                    name: format!("Shape {index}"),
+                })
+                .unwrap();
+        }
+        let size = 32 * 32 * 4;
+        let mut titles = Titles::new(&dirs);
+        titles.live = Mutex::new(LivePaintings::new(2 * size, 6 * size));
+        let before = titles.clips_live(editor.project(), 32, 32);
+        let mut changed = editor.project().clone();
+        Arc::make_mut(&mut changed.active_mut().clips[0])
+            .shape
+            .as_mut()
+            .unwrap()
+            .size = 0.9;
+        let after = titles.clips_live(&changed, 32, 32);
+        assert!(!Arc::ptr_eq(
+            before[0].frame.as_ref().unwrap(),
+            after[0].frame.as_ref().unwrap()
+        ));
+        for index in 1..before.len() {
+            assert!(
+                Arc::ptr_eq(
+                    before[index].frame.as_ref().unwrap(),
+                    after[index].frame.as_ref().unwrap()
+                ),
+                "unchanged painting {index} must survive an early cache miss"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dirs.data);
+    }
+
+    #[test]
+    fn a_preview_paints_only_visible_titles_at_its_time_and_can_cancel() {
+        let dirs = scratch("live_at");
+        let mut editor = Editor::new();
+        for index in 0..3 {
+            editor
+                .apply(Command::AddShapeClip {
+                    above: false,
+                    track_id: None,
+                    start: index as f64,
+                    style: Some(ShapeStyle {
+                        size: 0.2 + index as f64 * 0.05,
+                        ..Default::default()
+                    }),
+                    duration: Some(1.0),
+                    name: format!("Shape {index}"),
+                })
+                .unwrap();
+        }
+        let titles = Titles::new(&dirs);
+        let cancel = AtomicBool::new(false);
+        let at = titles.clips_live_at(editor.project(), 32, 32, 1.0, &cancel);
+        assert_eq!(at.len(), 1, "the previous title ends exactly at this time");
+        assert_eq!(at[0].clip.start, 1.0);
+        assert_eq!(
+            titles.live.lock().unwrap().kept.len(),
+            1,
+            "offscreen titles are not painted"
+        );
+        assert!(!titles.dir.exists(), "preview does not encode PNGs on disk");
+        let mut hidden = editor.project().clone();
+        for track in &mut hidden.active_mut().tracks {
+            track.visible = false;
+        }
+        assert!(
+            titles
+                .clips_live_at(&hidden, 32, 32, 1.5, &cancel)
+                .is_empty()
+        );
+        assert!(
+            titles
+                .clips_live_at(editor.project(), 32, 32, 3.0, &cancel)
+                .is_empty()
+        );
+        cancel.store(true, Ordering::Relaxed);
+        assert!(
+            titles
+                .clips_live_at(editor.project(), 32, 32, 2.5, &cancel)
+                .is_empty()
+        );
+        assert!(
+            titles
+                .clips_cancellable(editor.project(), 32, 32, &cancel)
+                .is_empty()
+        );
+        assert_eq!(titles.live.lock().unwrap().kept.len(), 1);
+        let _ = std::fs::remove_dir_all(dirs.data);
     }
 
     /// A painting asked for again is the most recently used, and outlives

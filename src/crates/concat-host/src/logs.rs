@@ -258,6 +258,11 @@ struct Logger {
 
 impl log::Log for Logger {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        // ureq 2 logs HTTP headers at Debug and does not redact xi-api-key.
+        // Keep credentials out even when CONCAT_LOG asks for all libraries.
+        if metadata.target().starts_with("ureq") && metadata.level() > log::Level::Warn {
+            return false;
+        }
         if metadata.level() > log::max_level() {
             return false;
         }
@@ -461,9 +466,14 @@ mod tests {
         assert_eq!(current(), Some(path.as_path()));
 
         log::warn!("the kettle is broken");
+        // Even the most verbose setting must never print the HTTP library's
+        // request headers: xi-api-key is not on ureq 2's redaction list.
+        log::set_max_level(log::LevelFilter::Trace);
+        log::debug!(target: "ureq::unit", "xi-api-key: secret-test-credential");
         log::logger().flush();
 
         let written = std::fs::read_to_string(&path).expect("reads back");
+        assert!(!written.contains("secret-test-credential"));
         // The header the install writes, and then the line.
         assert!(written.contains(env!("CARGO_PKG_VERSION")), "{written}");
         assert!(written.contains("WARN"), "{written}");

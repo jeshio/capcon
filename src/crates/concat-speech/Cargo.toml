@@ -11,11 +11,13 @@ concat-host.workspace = true
 concat-media.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
+unicode_categories = "0.1"
 
 # Model downloads. Blocking on purpose: downloads run on their own thread,
 # and an async HTTP stack would be a second runtime's worth of dependencies
 # for one GET.
 ureq = "2"
+tempfile = "3"
 
 # Kokoro models arrive as tar.bz2 archives, hence tar + bzip2 (pure-Rust
 # decoder) for unpacking them.
@@ -88,6 +90,9 @@ ort = { workspace = true, optional = true, features = ["directml"] }
 
 [features]
 chatterbox = ["dep:ort", "dep:tokenizers", "dep:concat-vision"]
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+security-framework = "3.7"
 
 [lints]
 workspace = true

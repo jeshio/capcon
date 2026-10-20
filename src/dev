@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Native development builds with a bounded incremental cache (macOS/Linux)."""
+
+import contextlib
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+
+ROOT = Path(__file__).resolve().parent
+GIB = 1024**3
+CACHE_NAME = re.compile(r"[a-zA-Z0-9_]+-[a-z0-9]+")
+SESSION_NAME = re.compile(r"s-([a-z0-9]+)-[a-z0-9]+-[a-z0-9]+")
+
+
+def entries(incremental):
+    """Measure allocated blocks once per inode, without following symlinks."""
+    result, seen = [], set()
+    if not incremental.exists():
+        return result
+    for directory in sorted(incremental.iterdir()):
+        if directory.is_symlink() or not directory.is_dir() or not CACHE_NAME.fullmatch(directory.name):
+            continue
+        size, newest = 0, directory.stat().st_mtime
+        for parent, dirs, files in os.walk(directory, followlinks=False):
+            dirs[:] = [name for name in dirs if not (Path(parent) / name).is_symlink()]
+            for name in files:
+                path = Path(parent) / name
+                stat = path.lstat()
+                if path.is_symlink():
+                    continue
+                newest = max(newest, stat.st_mtime)
+                inode = (stat.st_dev, stat.st_ino)
+                if inode not in seen:
+                    seen.add(inode)
+                    size += stat.st_blocks * 512
+        result.append((directory, size, newest))
+    return result
+
+
+@contextlib.contextmanager
+def cargo_lock(profile):
+    """Use Cargo's own lock, including protection against unwrapped Cargo builds."""
+    profile.mkdir(parents=True, exist_ok=True)
+    with (profile / ".cargo-lock").open("a+b") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+        else:
+            try:
+                yield True
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def trim_previous_ui_sessions(directory):
+    """Keep the newest complete snapshot; Cargo's build lock must be held.
+
+    Rustc snapshots are self-contained (shared files are hardlinks). Its own
+    collector keeps a prior snapshot as well as the current one; under disk
+    pressure we only need the newest complete snapshot for the next edit.
+    """
+    sessions = []
+    for path in directory.iterdir():
+        match = SESSION_NAME.fullmatch(path.name)
+        if match and path.is_dir() and not path.is_symlink() and not path.name.endswith("-working"):
+            sessions.append((int(match[1], 36), path))
+    for _, path in sorted(sessions)[:-1]:
+        shutil.rmtree(path)
+        lock = path.with_name(path.name.rsplit("-", 1)[0] + ".lock")
+        if lock.is_file() and not lock.is_symlink():
+            lock.unlink()
+        print(f"dev: removed previous UI snapshot {path.name}", flush=True)
+
+
+def maintain(root, policy, *, trim, remember=False):
+    profile = root / "target" / "quick"
+    incremental = profile / "incremental"
+    # Never traverse a redirected target or incremental directory.
+    for path in (root / "target", profile, incremental):
+        if path.is_symlink():
+            raise RuntimeError(f"Refusing redirected build cache: {path}")
+    with cargo_lock(profile) as held:
+        if not held:
+            print("dev: Cargo is building; cache cleanup skipped.", flush=True)
+            return
+        caches = entries(incremental)
+        marker = profile / ".capcon-hot-cache.json"
+        try:
+            if marker.is_symlink():
+                raise RuntimeError(f"Refusing redirected cache marker: {marker}")
+            hot = json.loads(marker.read_text())["directory"]
+        except (OSError, ValueError, KeyError, TypeError):
+            hot = None
+        ui = [item for item in caches if item[0].name.startswith("concat-")]
+        if remember or not any(item[0].name == hot for item in ui):
+            # The tiny `concat` binary cache is separate from its generated UI library.
+            large = [item for item in ui if item[1] >= 256 * 1024**2]
+            hot = max(large or ui, key=lambda item: item[2])[0].name if ui else None
+        if remember and hot:
+            with tempfile.NamedTemporaryFile(mode="w", dir=profile, prefix=".capcon-hot-", delete=False) as file:
+                file.write(json.dumps({"directory": hot}) + "\n")
+            Path(file.name).replace(marker)
+        total = sum(item[1] for item in caches)
+        limit = policy["incremental_budget_gib"] * GIB
+        reserve = policy["minimum_free_gib"] * GIB
+        expiry = time.time() - policy["unused_days"] * 86400
+        removed = 0
+        if trim and hot and (total > limit or shutil.disk_usage(root).free < reserve):
+            trim_previous_ui_sessions(incremental / hot)
+            caches = entries(incremental)
+            remaining = sum(item[1] for item in caches)
+            removed += total - remaining
+            total = remaining
+        for directory, size, newest in sorted(caches, key=lambda item: item[2]):
+            if directory.name == hot or (total <= limit and newest >= expiry
+                                        and shutil.disk_usage(root).free >= reserve):
+                continue
+            if trim:
+                shutil.rmtree(directory)
+                # Rustc shares files between sessions via hardlinks. Recount
+                # instead of claiming that every unlinked byte was freed.
+                remaining = sum(item[1] for item in entries(incremental))
+                removed += max(0, total - remaining)
+                total = remaining
+                print(f"dev: removed compiler cache {directory.name}", flush=True)
+        free = shutil.disk_usage(root).free
+        print(f"dev: incremental {total / GIB:.2f}/{limit / GIB:.0f} GiB; "
+              f"freed {removed / GIB:.2f} GiB; disk free {free / GIB:.1f} GiB", flush=True)
+        if total > limit:
+            print("dev: retaining the latest UI cache even though it exceeds the budget.", flush=True)
+
+
+def command(mode, args, cargo):
+    # A single native profile shares all compiled dependencies. Checks/tests do
+    # not create another multi-gigabyte incremental variant of the generated UI.
+    cmd = [cargo, "clippy" if mode == "check" else "build" if mode == "run" else mode,
+           "--locked", "--profile", "quick", "--target-dir", str(ROOT / "target")]
+    if mode in ("test", "check"):
+        cmd += ["--config", "profile.quick.package.concat.incremental=false"]
+    if mode in ("build", "run"):
+        cmd += ["-p", "concat", "--bin", "concat"]
+    elif not any(arg in ("-p", "--package", "--workspace") or arg.startswith(("--package=", "-p"))
+                 for arg in args):
+        cmd += ["-p", "concat", "--lib"]
+    return cmd + args
+
+
+def main(argv):
+    if not argv or argv[0] not in ("build", "run", "test", "check", "cache"):
+        print("Usage: ./dev {build|run|test|check} [Cargo arguments]\n"
+              "       ./dev cache [--trim]", file=sys.stderr)
+        return 2
+    mode, args = argv[0], argv[1:]
+    policy = tomllib.loads((ROOT / ".cargo" / "dev-cache.toml").read_text())
+    if mode == "cache":
+        if args not in ([], ["--trim"]):
+            raise RuntimeError("Use ./dev cache or ./dev cache --trim")
+        maintain(ROOT, policy, trim=bool(args))
+        return 0
+    before_separator = args[:args.index("--")] if "--" in args else args
+    for arg in before_separator:
+        if arg in ("--release", "--profile", "--target", "--target-dir", "--manifest-path", "--config") or arg.startswith(
+            ("--profile=", "--target=", "--target-dir=", "--manifest-path=", "--config=")
+        ):
+            raise RuntimeError("./dev uses the native quick profile; use Cargo directly for other targets/profiles.")
+    maintain(ROOT, policy, trim=True)
+    free = shutil.disk_usage(ROOT).free
+    reserve = policy["minimum_free_gib"] * GIB
+    if free < reserve:
+        raise RuntimeError(f"Only {free / GIB:.1f} GiB free; need {reserve / GIB:.0f} GiB before building.")
+    program_args = []
+    if mode == "run" and "--" in args:
+        index = args.index("--")
+        args, program_args = args[:index], args[index + 1:]
+    cargo = os.environ.get("CARGO", "cargo")
+    result = subprocess.run(command(mode, args, cargo), cwd=ROOT)
+    maintain(ROOT, policy, trim=True, remember=result.returncode == 0 and mode in ("build", "run"))
+    if result.returncode == 0 and mode == "run":
+        binary = ROOT / "target" / "quick" / "concat"
+        os.execv(binary, [str(binary), *program_args])
+    return result.returncode
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"dev: {error}", file=sys.stderr)
+        sys.exit(1)

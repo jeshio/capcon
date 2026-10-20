@@ -38,6 +38,16 @@ impl SingleFlight {
     ///
     /// `what` is the user-facing job name ("export", "transcription", ...).
     pub fn begin(self: &Arc<Self>, what: &str) -> Result<Job, String> {
+        self.begin_with_cancel(what, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// Claim a slot with a flag created before a worker was scheduled.
+    /// A cancel pressed before the worker starts must not be reset by begin.
+    pub fn begin_with_cancel(
+        self: &Arc<Self>,
+        what: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Job, String> {
         let mut slot = self
             .slot
             .lock()
@@ -47,7 +57,6 @@ impl SingleFlight {
                 "a {what} is already running - wait for it or cancel it first"
             ));
         }
-        let cancel = Arc::new(AtomicBool::new(false));
         *slot = Some(Arc::clone(&cancel));
         Ok(Job {
             owner: Arc::clone(self),
@@ -213,6 +222,16 @@ fn alive(_pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cancel_before_the_worker_starts_is_kept() {
+        let flight = Arc::new(SingleFlight::new());
+        let cancel = Arc::new(AtomicBool::new(true));
+        let job = flight.begin_with_cancel("transcription", cancel).unwrap();
+        assert!(job.cancelled());
+        drop(job);
+        assert!(!flight.begin("transcription").unwrap().cancelled());
+    }
 
     #[test]
     fn a_mark_left_by_a_running_process_is_not_a_death() {

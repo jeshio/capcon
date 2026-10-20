@@ -37,6 +37,8 @@ export component TextPanel inherits VerticalLayout {
     in property <SelectedClipData> selected;
     /// The faces this build bundles.
     in property <[string]> families: ["Hanken Grotesk"];
+    /// Ready-made looks, in the engine's preset order.
+    in property <[string]> preset-names;
 
     callback set(field: ClipField, value: float);
     callback set-text(field: ClipTextField, value: string);
@@ -46,6 +48,8 @@ export component TextPanel inherits VerticalLayout {
     callback import-font();
     /// Keep this title's look for new titles and captions.
     callback set-default();
+    callback preset-picked(index: int);
+    callback apply-to-track();
 
     /// Several titles selected together: every knob writes to all of them
     /// and the words, each title's own, are not offered.
@@ -153,6 +157,46 @@ export component TextPanel inherits VerticalLayout {
         return v <= 0 ? I18n.t("common.autoValue") : "\{Math.round(v)}";
     }
 
+    // ── style ────────────────────────────────────────────────────────────
+    Section {
+        first: true;
+        SectionHeader { title: I18n.t("textPanel.captionStyle"); }
+        SectionBody {
+            Row {
+                label: I18n.t("textPanel.style");
+                label-width: root.label-w;
+                Select {
+                    options: root.preset-names;
+                    current: -1;
+                    placeholder: I18n.t("textPanel.chooseStyle");
+                    // The choice is an action, not a saved preset id: the
+                    // individual controls can customise it immediately.
+                    changed(index) => {
+                        root.preset-picked(index);
+                        self.current = -1;
+                    }
+                }
+            }
+            VerticalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                spacing: Theme.gap;
+                Button {
+                    label: I18n.t("textPanel.applyToAllCaptions");
+                    block: true;
+                    enabled: root.selected.text-track-count > 1;
+                    clicked => { root.apply-to-track(); }
+                }
+                Text {
+                    text: I18n.t1("textPanel.captionStyleScope", "\{root.selected.text-track-count}");
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+
     // ── a batch ──────────────────────────────────────────────────────────
     if root.batch: SectionBody {
         padding-left: Theme.pad;
@@ -169,7 +213,6 @@ export component TextPanel inherits VerticalLayout {
 
     // ── content ──────────────────────────────────────────────────────────
     if !root.batch: Section {
-        first: true;
         content := SectionHeader {
             title: I18n.t("textPanel.content");
             collapsible: true;

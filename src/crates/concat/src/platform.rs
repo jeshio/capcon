@@ -125,6 +125,7 @@ fn reapply_ui_scale() {
 /// the pointer wears the matching arrow while it is there.
 #[cfg(not(target_os = "android"))]
 struct DropHandler {
+    keyboard: crate::keyboard::PhysicalShortcuts,
     pending: Vec<PathBuf>,
     on_dropped: Box<dyn Fn(Vec<PathBuf>)>,
     /// Paths a Wayland drop delivered, from the listener's thread.
@@ -197,6 +198,7 @@ impl DropHandler {
         on_pressed_away: impl Fn() + 'static,
     ) -> Self {
         Self {
+            keyboard: Default::default(),
             pending: Vec::new(),
             on_dropped: Box::new(on_dropped),
             arrived: Default::default(),
@@ -265,6 +267,31 @@ impl CustomApplicationHandler for DropHandler {
             self.wayland = listen_for_wayland_drops(window, &self.arrived);
         }
         match event {
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.keyboard.modifiers_changed(modifiers.state());
+            }
+            WindowEvent::Focused(false) => self.keyboard.focus_lost(),
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic,
+                ..
+            } => {
+                if let Some(window) = slint_window
+                    && self.keyboard.key_event(
+                        window,
+                        event.physical_key,
+                        matches!(
+                            event.logical_key,
+                            slint::winit_030::winit::keyboard::Key::Named(_)
+                        ),
+                        event.state,
+                        event.repeat,
+                        *is_synthetic,
+                    )
+                {
+                    return EventResult::PreventDefault;
+                }
+            }
             WindowEvent::ScaleFactorChanged { .. } => reapply_ui_scale(),
             WindowEvent::DroppedFile(path) => self.pending.push(path.clone()),
             WindowEvent::CursorMoved { position, .. } => {

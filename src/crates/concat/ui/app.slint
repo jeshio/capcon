@@ -315,6 +315,13 @@ export component App inherits Window {
     callback captions-source-changed(index: int);
     callback captions-text-edited(text: string);
     callback captions-model-changed(index: int);
+    callback captions-provider-changed(index: int);
+    callback captions-language-changed(index: int);
+    callback captions-strip-punctuation-changed(on: bool);
+    callback captions-clean-speech-changed(on: bool);
+    callback captions-key-edited(text: string);
+    callback captions-save-key();
+    callback captions-forget-key();
     callback captions-placement-changed(index: int);
     callback captions-size-changed(index: int);
     callback captions-begin();
@@ -694,6 +701,13 @@ export component App inherits Window {
             source-changed(index) => { root.captions-source-changed(index); }
             text-edited(text) => { root.captions-text-edited(text); }
             model-changed(index) => { root.captions-model-changed(index); }
+            provider-changed(index) => { root.captions-provider-changed(index); }
+            language-changed(index) => { root.captions-language-changed(index); }
+            strip-punctuation-changed(on) => { root.captions-strip-punctuation-changed(on); }
+            clean-speech-changed(on) => { root.captions-clean-speech-changed(on); }
+            key-edited(text) => { root.captions-key-edited(text); }
+            save-key => { root.captions-save-key(); }
+            forget-key => { root.captions-forget-key(); }
             placement-changed(index) => { root.captions-placement-changed(index); }
             size-changed(index) => { root.captions-size-changed(index); }
             begin => { root.captions-begin(); }

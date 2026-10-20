@@ -17,7 +17,8 @@
 //! stage and the lanes, so they live with the timeline's.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use concat_host::preview::FrameSpec;
 use concat_project::model::Project;
@@ -32,7 +33,7 @@ pub enum MonitorMsg {
     /// The frame at the playhead is wanted.
     Request,
     /// The worker is done: a frame, or why not.
-    Frame(Result<Picture, String>, FrameSpec),
+    Frame(PreparedFrame, FrameSpec, u64),
     /// The quality picker: 0 full, 1 half, 2 quarter.
     QualityChanged(i32),
     /// A project opened: the monitor starts clean and may complain again.
@@ -45,10 +46,10 @@ impl std::fmt::Debug for MonitorMsg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Request => write!(f, "Request"),
-            Self::Frame(result, spec) => write!(
+            Self::Frame(result, spec, _) => write!(
                 f,
                 "Frame({}, {spec:?})",
-                match result {
+                match &result.picture {
                     Ok(Picture::Sources(_)) => "sources".to_owned(),
                     Ok(Picture::Pixels(_, w, h)) => format!("{w}x{h} pixels"),
                     Err(error) => format!("error {error:?}"),
@@ -71,13 +72,117 @@ pub enum Picture {
     Pixels(Vec<u8>, u32, u32),
 }
 
+/// A worker's frame and the title geometry belonging to that same snapshot.
+pub struct PreparedFrame {
+    picture: Result<Picture, String>,
+    blocks: Vec<TitleBlock>,
+}
+
+struct TitleBlock {
+    id: String,
+    size: (u32, u32),
+    offset: (i32, i32),
+}
+
+/// One frame in flight, with subsequent requests coalesced into the newest.
+/// A cancelled still is never uploaded, nor may an old project clear a new
+/// project's busy flag. Moving frames finish so a slow playback can advance.
+#[derive(Default)]
+struct FrameQueue {
+    serial: u64,
+    busy: bool,
+    wanted: bool,
+    cancel: Arc<AtomicBool>,
+}
+
+impl FrameQueue {
+    fn begin(&mut self, moving: bool) -> Option<(u64, Arc<AtomicBool>)> {
+        if self.busy {
+            self.wanted = true;
+            if !moving {
+                self.cancel.store(true, Ordering::Relaxed);
+            }
+            return None;
+        }
+        self.serial += 1;
+        self.busy = true;
+        self.wanted = false;
+        self.cancel = Arc::new(AtomicBool::new(false));
+        Some((self.serial, Arc::clone(&self.cancel)))
+    }
+
+    fn finish(&mut self, serial: u64) -> Option<bool> {
+        if !self.busy || self.serial != serial {
+            return None;
+        }
+        self.busy = false;
+        Some(!self.cancel.load(Ordering::Relaxed))
+    }
+
+    fn reset(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.serial += 1;
+        self.busy = false;
+        self.wanted = false;
+    }
+}
+
+/// Keep the same plan pointer between frames while both the media snapshot
+/// and the active title paintings are unchanged.
+#[derive(Default)]
+struct TitlePlan {
+    base: Option<Arc<Vec<concat_export::ExportClip>>>,
+    keys: Vec<(String, String)>,
+    clips: Arc<Vec<concat_export::ExportClip>>,
+}
+
+impl TitlePlan {
+    fn matches(
+        &self,
+        base: &Arc<Vec<concat_export::ExportClip>>,
+        titles: &[concat_host::titles::TitleClip],
+    ) -> bool {
+        self.base.as_ref().is_some_and(|old| Arc::ptr_eq(old, base))
+            && self.keys.len() == titles.len()
+            && self
+                .keys
+                .iter()
+                .zip(titles)
+                .all(|((id, path), title)| *id == title.clip_id && *path == title.clip.path)
+    }
+
+    fn attach(
+        &mut self,
+        base: Arc<Vec<concat_export::ExportClip>>,
+        titles: Vec<concat_host::titles::TitleClip>,
+    ) -> Arc<Vec<concat_export::ExportClip>> {
+        if self.matches(&base, &titles) {
+            return Arc::clone(&self.clips);
+        }
+        let keys = titles
+            .iter()
+            .map(|title| (title.clip_id.clone(), title.clip.path.clone()))
+            .collect();
+        self.clips = if titles.is_empty() {
+            Arc::clone(&base)
+        } else {
+            let mut clips = (*base).clone();
+            clips.extend(titles.into_iter().map(|title| title.clip));
+            Arc::new(clips)
+        };
+        self.base = Some(base);
+        self.keys = keys;
+        Arc::clone(&self.clips)
+    }
+}
+
 /// The monitor's state.
 #[derive(Default)]
 pub struct MonitorPane {
     /// The last frame drawn.
     pub image: slint::Image,
-    busy: bool,
-    wanted: bool,
+    requests: FrameQueue,
+    titles: Arc<Mutex<TitlePlan>>,
     /// Said once per project: a monitor that cannot decode says so, and
     /// then stops repeating itself.
     failed: bool,
@@ -144,17 +249,31 @@ impl MonitorPane {
     pub fn update(&mut self, msg: MonitorMsg, studio: &mut Studio) {
         match msg {
             MonitorMsg::Request => self.request(studio),
-            MonitorMsg::Frame(result, spec) => {
-                self.busy = false;
+            MonitorMsg::Frame(result, spec, serial) => {
+                let Some(current) = self.requests.finish(serial) else {
+                    return;
+                };
+                if !current {
+                    self.asked = None;
+                    if self.requests.wanted {
+                        self.request(studio);
+                    }
+                    return;
+                }
+                for block in result.blocks {
+                    studio
+                        .title_blocks
+                        .insert(block.id, (block.size, block.offset));
+                }
                 let fps = studio.project().active().video.rate();
                 let wait = self.asked.take().map(|at| at.elapsed()).unwrap_or_default();
-                if spec.moving && result.is_ok() {
+                if spec.moving && result.picture.is_ok() {
                     self.cadence
                         .count((spec.time * fps + 1e-6).floor() as i64, wait);
                 } else if !spec.moving {
                     self.cadence.report(fps);
                 }
-                let picture = match result {
+                let picture = match result.picture {
                     // Drawn here and not on the worker: this is the event
                     // loop, the one thread the window's renderer submits
                     // from, and a second thread submitting beside it hangs
@@ -186,7 +305,7 @@ impl MonitorPane {
                         }
                     }
                 }
-                if self.wanted {
+                if self.requests.wanted {
                     self.request(studio);
                 }
             }
@@ -195,8 +314,15 @@ impl MonitorPane {
                 self.quality.insert(id, (index.max(0) as usize).min(2));
                 self.request(studio);
             }
-            MonitorMsg::Opened => self.failed = false,
-            MonitorMsg::Closed => self.image = slint::Image::default(),
+            MonitorMsg::Opened | MonitorMsg::Closed => {
+                self.requests.reset();
+                self.titles = Arc::new(Mutex::new(TitlePlan::default()));
+                self.asked = None;
+                self.failed = false;
+                self.cadence = Cadence::default();
+                self.image = slint::Image::default();
+                studio.title_blocks.clear();
+            }
         }
     }
 
@@ -227,13 +353,14 @@ impl MonitorPane {
         if studio.on_start || studio.session.is_none() {
             return;
         }
-        if self.busy {
-            self.wanted = true;
+        let moving = studio.playing || studio.source.as_ref().is_some_and(|source| source.playing);
+        let Some((serial, cancel)) = self.requests.begin(moving) else {
             return;
-        }
+        };
         let (width, height) =
             Self::frame_size(self.quality_of(studio.project()), studio.output_size());
-        let Some((clips, settings)) = studio.preview_clips() else {
+        let Some((clips, settings)) = studio.preview_base() else {
+            self.requests.reset();
             return;
         };
         let quality = self.quality_of(studio.project());
@@ -255,11 +382,51 @@ impl MonitorPane {
             self.cadence.report(studio.project().active().video.rate());
         }
         let monitor = studio.host.monitor.clone();
-        self.busy = true;
-        self.wanted = false;
+        let painter = Arc::clone(&studio.host.titles);
+        let project = studio.source.is_none().then(|| studio.project().clone());
+        let output_width = studio.output_size().0;
+        let plan = Arc::clone(&self.titles);
         self.asked = Some(std::time::Instant::now());
         spawn_frame(
             move || {
+                let mut blocks = Vec::new();
+                let clips = if let Some(project) = project {
+                    let titles = painter.clips_live_at(&project, width, height, spec.time, &cancel);
+                    let scale = f64::from(output_width) / f64::from(width);
+                    for title in &titles {
+                        blocks.push(TitleBlock {
+                            id: title.clip_id.clone(),
+                            size: (
+                                (f64::from(title.block.0) * scale).round() as u32,
+                                (f64::from(title.block.1) * scale).round() as u32,
+                            ),
+                            offset: (
+                                (f64::from(title.offset.0) * scale).round() as i32,
+                                (f64::from(title.offset.1) * scale).round() as i32,
+                            ),
+                        });
+                    }
+                    let mut plan = plan.lock().unwrap_or_else(|e| e.into_inner());
+                    if !plan.matches(&clips, &titles) {
+                        for title in &titles {
+                            if let Some(frame) = &title.frame {
+                                monitor.hold_still(
+                                    std::path::Path::new(&title.clip.path),
+                                    Arc::clone(frame),
+                                );
+                            }
+                        }
+                    }
+                    plan.attach(clips, titles)
+                } else {
+                    clips
+                };
+                if cancel.load(Ordering::Relaxed) {
+                    return PreparedFrame {
+                        picture: Err("cancelled".into()),
+                        blocks: Vec::new(),
+                    };
+                }
                 // On the window's device the frame stays a texture; without
                 // one it comes back as pixels and is uploaded here.
                 let frame = if monitor.has_gpu() {
@@ -278,7 +445,7 @@ impl MonitorPane {
                 // has not queued yet, so asking for all of them each frame
                 // costs nothing and keeps a slow decode from catching up
                 // with the playhead.
-                {
+                if !cancel.load(Ordering::Relaxed) {
                     let monitor = monitor.clone();
                     let settings = settings.clone();
                     let ahead = if spec.moving {
@@ -288,10 +455,13 @@ impl MonitorPane {
                     };
                     spawn_detached(move || monitor.prefetch(clips, &settings, spec, ahead));
                 }
-                frame
+                PreparedFrame {
+                    picture: frame,
+                    blocks,
+                }
             },
             move |studio, _, _, result| {
-                studio.handle(Msg::Monitor(MonitorMsg::Frame(result, spec)));
+                studio.handle(Msg::Monitor(MonitorMsg::Frame(result, spec, serial)));
             },
         );
     }
@@ -300,6 +470,74 @@ impl MonitorPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rapid_typing_keeps_one_job_and_discards_its_old_result() {
+        let mut queue = FrameQueue::default();
+        let (old, cancel) = queue.begin(false).unwrap();
+        for _ in 0..20 {
+            assert!(queue.begin(false).is_none());
+        }
+        assert!(cancel.load(Ordering::Relaxed));
+        assert_eq!(
+            queue.finish(old),
+            Some(false),
+            "stale pixels must not reach the GPU"
+        );
+        assert!(queue.wanted);
+        let (latest, cancel) = queue.begin(false).unwrap();
+        assert!(!queue.wanted && !cancel.load(Ordering::Relaxed));
+        assert_eq!(
+            queue.finish(old),
+            None,
+            "old completion cannot release the newest job"
+        );
+        assert_eq!(queue.finish(latest), Some(true));
+    }
+
+    #[test]
+    fn project_switch_cancels_old_work_without_blocking_the_new_project() {
+        let mut queue = FrameQueue::default();
+        let (old, cancel) = queue.begin(false).unwrap();
+        queue.reset();
+        assert!(cancel.load(Ordering::Relaxed));
+        let (new, _) = queue.begin(false).unwrap();
+        assert_eq!(queue.finish(old), None);
+        assert!(queue.busy);
+        assert_eq!(queue.finish(new), Some(true));
+        let (moving, cancel) = queue.begin(true).unwrap();
+        assert!(queue.begin(true).is_none());
+        assert!(
+            !cancel.load(Ordering::Relaxed),
+            "playback must make progress even below its target fps"
+        );
+        assert_eq!(queue.finish(moving), Some(true));
+    }
+
+    #[test]
+    fn identical_caption_pixels_keep_each_clips_own_timing() {
+        let mut plan = TitlePlan::default();
+        let base = Arc::new(Vec::new());
+        let title = |id: &str, start| concat_host::titles::TitleClip {
+            clip_id: id.to_owned(),
+            clip: concat_export::ExportClip {
+                path: "memory://same-pixels".into(),
+                ..concat_export::ExportClip::blank(concat_export::ClipKind::Image, start, 1.0, 0)
+            },
+            block: (10, 10),
+            offset: (0, 0),
+            frame: None,
+        };
+        let first = plan.attach(Arc::clone(&base), vec![title("first", 0.0)]);
+        let again = plan.attach(Arc::clone(&base), vec![title("first", 0.0)]);
+        assert!(
+            Arc::ptr_eq(&first, &again),
+            "unchanged frames reuse the compositor plan"
+        );
+        let next = plan.attach(base, vec![title("next", 1.0)]);
+        assert!(!Arc::ptr_eq(&first, &next));
+        assert_eq!(next[0].start, 1.0);
+    }
 
     #[test]
     fn a_frame_is_even_sided_and_never_vanishes() {

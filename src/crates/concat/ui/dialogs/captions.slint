@@ -4,10 +4,11 @@
 import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
 import { Glyph, Icon } from "../icons.slint";
-import { Button, CopyChip, DialogRow, DialogSection, Modal, Progress } from "../primitives/modal.slint";
+import { Button, CopyChip, DialogRow, DialogSection, Field, Modal, Progress } from "../primitives/modal.slint";
 import { SegmentedControl } from "../primitives/segmented-control.slint";
 import { Select } from "../primitives/select.slint";
 import { Switch } from "../inspector/controls.slint";
+import { PaneScroll } from "../workspace/pane.slint";
 
 // Captions: what the tray's Captions tool opens.
 //
@@ -41,6 +42,16 @@ export struct CaptionsSheetData {
     text: string,
     /// Row in the installed transcriber list.
     model: int,
+    /// 0 on-device Whisper, 1 ElevenLabs Scribe v2.
+    provider: int,
+    language: int,
+    strip-punctuation: bool,
+    clean-speech: bool,
+    api-key: string,
+    key-saved: bool,
+    key-busy: bool,
+    can-save-key: bool,
+    cancelling: bool,
     /// 0 Bottom, 1 Centre, 2 Top
     placement: int,
     /// 0 Small, 1 Medium, 2 Large
@@ -72,6 +83,13 @@ export component CaptionsDialog inherits Modal {
     callback source-changed(index: int);
     callback text-edited(text: string);
     callback model-changed(index: int);
+    callback provider-changed(index: int);
+    callback language-changed(index: int);
+    callback strip-punctuation-changed(on: bool);
+    callback clean-speech-changed(on: bool);
+    callback key-edited(text: string);
+    callback save-key();
+    callback forget-key();
     callback placement-changed(index: int);
     callback size-changed(index: int);
     callback begin();
@@ -102,7 +120,12 @@ export component CaptionsDialog inherits Modal {
     }
     init => { root.draft = root.data.text; }
 
-    VerticalLayout {
+    PaneScroll {
+        preferred-height: form.preferred-height;
+        vertical-stretch: 1;
+        finger: root.fill;
+
+        form := VerticalLayout {
         if !root.data.running && !root.from-voice: DialogSection {
             first: true;
             title: I18n.t("common.script");
@@ -198,6 +221,15 @@ export component CaptionsDialog inherits Modal {
             }
 
             DialogRow {
+                label: I18n.t("captions.recognitionProvider");
+                Select {
+                    options: [I18n.t("captions.onDevice"), "ElevenLabs · Scribe v2"];
+                    current: root.data.provider;
+                    changed(index) => { root.provider-changed(index); }
+                }
+            }
+
+            if root.data.provider == 0: DialogRow {
                 label: I18n.t("common.model");
                 Select {
                     options: root.models;
@@ -208,9 +240,102 @@ export component CaptionsDialog inherits Modal {
                 }
             }
 
-            if !root.data.ready: Text {
+            if root.data.provider == 0 && !root.data.ready: Text {
                 text: I18n.t("captions.downloadTranscriberModelFirst");
                 color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
+
+            if root.data.provider == 1: VerticalLayout {
+                spacing: 10px;
+
+                if !root.data.key-busy: DialogRow {
+                    label: I18n.t("captions.apiKey");
+                    HorizontalLayout {
+                        spacing: 6px;
+                        key-field := Field {
+                            value: root.data.api-key;
+                            placeholder: I18n.t("captions.enterApiKey");
+                            secret: true;
+                            technical: true;
+                            edited(text) => { root.key-edited(text); }
+                        }
+                        Button {
+                            ghost: true;
+                            label: I18n.t("studio.paste");
+                            clicked => { key-field.paste-value(); }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    if root.data.can-save-key: Button {
+                        horizontal-stretch: 1;
+                        block: true;
+                        ghost: true;
+                        label: root.data.key-saved ? I18n.t("captions.keySaved") : I18n.t("captions.saveKey");
+                        enabled: !root.data.key-busy && !root.data.key-saved && root.data.api-key != "";
+                        clicked => { root.save-key(); }
+                    }
+                    Button {
+                        horizontal-stretch: 1;
+                        block: true;
+                        ghost: true;
+                        label: I18n.t("captions.forgetKey");
+                        enabled: !root.data.key-busy;
+                        clicked => { root.forget-key(); }
+                    }
+                }
+
+                Text {
+                    text: root.data.can-save-key ? I18n.t("captions.keychainHint") : I18n.t("captions.sessionKeyHint");
+                    color: Theme.fg-dim;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                }
+
+                DialogRow {
+                    label: I18n.t("captions.audioLanguage");
+                    Select {
+                        options: [I18n.t("captions.detectLanguage"), I18n.t("captions.russian"), I18n.t("captions.english")];
+                        current: root.data.language;
+                        changed(index) => { root.language-changed(index); }
+                    }
+                }
+
+                Text {
+                    text: I18n.t("captions.elevenlabsHint");
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if !root.data.running && root.from-voice: DialogSection {
+            title: I18n.t("captions.textCleanup");
+
+            DialogRow {
+                label: I18n.t("captions.withoutPunctuation");
+                Switch {
+                    checked: root.data.strip-punctuation;
+                    toggled(on) => { root.strip-punctuation-changed(on); }
+                }
+            }
+
+            DialogRow {
+                label: I18n.t("captions.cleanSpeech");
+                Switch {
+                    checked: root.data.clean-speech;
+                    toggled(on) => { root.clean-speech-changed(on); }
+                }
+            }
+
+            Text {
+                text: I18n.t("captions.cleanupHint");
+                color: Theme.fg-dim;
                 font-size: Theme.fs-sm;
                 wrap: word-wrap;
             }
@@ -329,7 +454,8 @@ export component CaptionsDialog inherits Modal {
             if root.data.running: HorizontalLayout {
                 alignment: start;
                 Button {
-                    label: I18n.t("common.cancel");
+                    label: root.data.cancelling ? I18n.t("captions.cancelling") : I18n.t("common.cancel");
+                    enabled: !root.data.cancelling;
                     glyph: Glyph.close;
                     ghost: true;
                     clicked => { root.cancel(); }
@@ -372,5 +498,6 @@ export component CaptionsDialog inherits Modal {
                 }
             }
         }
+    }
     }
 }

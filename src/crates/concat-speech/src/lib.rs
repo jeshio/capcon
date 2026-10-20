@@ -19,6 +19,8 @@
 
 #[cfg(feature = "chatterbox")]
 pub mod chatterbox;
+pub mod cleanup;
+pub mod elevenlabs;
 pub mod transcribe;
 pub mod tts;
 

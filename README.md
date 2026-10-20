@@ -102,16 +102,26 @@ Then:
 
 ```sh
 cd src
-cargo run -p concat          # the editor window
+./dev run                   # the editor window (macOS/Linux, Python 3.11+)
 ```
 
 Other useful commands:
 
 ```sh
+./dev build                          # fast native development build + cache maintenance
+./dev test -p concat-core --lib       # focused tests, sharing the quick dependency build
+./dev cache                          # show cache usage; --trim applies the cache policy
 cargo build --profile app -p concat   # the shipping binary (fat LTO, stripped)
 cargo test                            # run the test suite
 cargo fmt --check && cargo clippy --all-targets -- -D warnings   # what CI checks
 ```
+
+Native development uses one `quick` profile. The latest incremental UI cache is
+kept for fast edits; old variants are trimmed to an 8 GiB budget under Cargo's
+build lock. Checks and tests reuse the same dependencies without creating a
+second large incremental UI cache. The build requires 8 GiB of free disk space
+before it starts. See [the local build guide](docs/BUILDING-CAPCON.md) for details.
+On Windows, use `cargo dev` or `cargo dev-build` directly.
 
 If you change text the interface shows, run `python3 scripts/locales.py` from the repo root so the string inventory stays in sync. Full details live in [CONTRIBUTING.md](CONTRIBUTING.md).
 

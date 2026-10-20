@@ -38,6 +38,12 @@ a `concat-project` command.
 
 ## Build and run
 
+For everyday native editor work on macOS/Linux, prefer `./dev build` and
+`./dev run` (Python 3.11+). They share the `quick` profile and keep its
+incremental cache within a budget while preserving the latest UI cache.
+`./dev test -p <crate> --lib` runs focused tests. See
+[the local build guide](../docs/BUILDING-CAPCON.md).
+
 ```sh
 cargo build
 cargo test

@@ -455,14 +455,9 @@ impl ExportPane {
             hdr: self.hdr(studio),
         };
         let (frame_w, frame_h) = studio.output_size();
-        let titles = studio
-            .host
-            .titles
-            .clips(session.project(), frame_w, frame_h)
-            .into_iter()
-            .map(|title| title.clip)
-            .collect();
-        let mut request = export::request(session, &spec, titles);
+        let titles = std::sync::Arc::clone(&studio.host.titles);
+        let project = session.project().clone();
+        let mut request = export::request(session, &spec, Vec::new());
         let (width, height) = self.size(studio);
         let (num, den) = self.rate(studio);
         request.width = width;
@@ -490,6 +485,12 @@ impl ExportPane {
         spawn(
             move || {
                 let job = job;
+                request.clips.extend(
+                    titles
+                        .clips_cancellable(&project, frame_w, frame_h, job.cancel_flag())
+                        .into_iter()
+                        .map(|title| title.clip),
+                );
                 export::run_on(&request, compositor, job.cancel_flag(), |progress| {
                     let fraction = if progress.total > 0 {
                         progress.frame as f32 / progress.total as f32

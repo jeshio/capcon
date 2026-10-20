@@ -18,14 +18,17 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use concat_project::Command;
 use concat_project::model::{ClipKind, TextStyle};
 use concat_project::srt;
 use concat_speech::JobStage;
+use concat_speech::cleanup::CaptionCleanup;
+use concat_speech::elevenlabs::{self, ApiKey};
 use concat_speech::transcribe::Segment;
 
-use crate::host::{on_ui_in_project, spawn_in_project};
+use crate::host::{on_ui_in_project, spawn, spawn_in_project};
 use crate::i18n::{t, tf};
 use crate::panes::Msg;
 use crate::panes::pace::{Pace, Stage, Timings};
@@ -57,6 +60,19 @@ pub enum CaptionsMsg {
     SourceChanged(i32),
     TextEdited(String),
     ModelChanged(i32),
+    ProviderChanged(i32),
+    LanguageChanged(i32),
+    StripPunctuationChanged(bool),
+    CleanSpeechChanged(bool),
+    KeyEdited(ApiKey),
+    KeyLoaded(Result<ApiKey, String>),
+    SaveKey,
+    KeySaved {
+        key: ApiKey,
+        result: Result<(), String>,
+    },
+    ForgetKey,
+    KeyForgotten(Result<(), String>),
     PlacementChanged(i32),
     SizeChanged(i32),
     /// Run the pass the sheet describes.
@@ -115,6 +131,15 @@ pub struct CaptionsPane {
     pub text: String,
     /// Row in the installed transcriber list.
     pub model: usize,
+    pub elevenlabs: bool,
+    pub language: usize,
+    pub cleanup: CaptionCleanup,
+    api_key: ApiKey,
+    key_loaded: bool,
+    key_saved: bool,
+    key_busy: bool,
+    cancelling: bool,
+    cancel: Arc<AtomicBool>,
     /// 0 bottom, 1 centre, 2 top.
     pub placement: usize,
     /// 0 small, 1 medium, 2 large.
@@ -170,11 +195,99 @@ impl CaptionsPane {
             }
             CaptionsMsg::TextEdited(text) => self.text = text,
             CaptionsMsg::ModelChanged(index) => self.model = index.max(0) as usize,
+            CaptionsMsg::ProviderChanged(index) => {
+                self.elevenlabs = index == 1;
+                studio.prefs.captions_elevenlabs = self.elevenlabs;
+                studio.prefs.save(&studio.host.dirs);
+                self.message.clear();
+                self.load_key();
+            }
+            CaptionsMsg::LanguageChanged(index) => {
+                self.language = (index.max(0) as usize).min(2);
+                studio.prefs.captions_language = language(self.language).map(str::to_owned);
+                studio.prefs.save(&studio.host.dirs);
+            }
+            CaptionsMsg::StripPunctuationChanged(on) => {
+                self.cleanup.strip_punctuation = on;
+                studio.prefs.captions_cleanup = self.cleanup;
+                studio.prefs.save(&studio.host.dirs);
+            }
+            CaptionsMsg::CleanSpeechChanged(on) => {
+                self.cleanup.clean_speech = on;
+                studio.prefs.captions_cleanup = self.cleanup;
+                studio.prefs.save(&studio.host.dirs);
+            }
+            CaptionsMsg::KeyEdited(key) => {
+                self.api_key = key;
+                self.key_saved = false;
+                self.message.clear();
+            }
+            CaptionsMsg::KeyLoaded(result) => {
+                self.key_busy = false;
+                match result {
+                    Ok(key) if self.api_key.is_empty() => {
+                        self.key_saved = !key.is_empty();
+                        self.api_key = key;
+                    }
+                    Err(error) => self.message = error,
+                    _ => {}
+                }
+            }
+            CaptionsMsg::SaveKey if !self.key_busy => {
+                if let Err(error) = self.api_key.validate() {
+                    self.message = error;
+                    return;
+                }
+                self.key_busy = true;
+                let key = self.api_key.clone();
+                spawn(
+                    move || {
+                        let result = elevenlabs::save_key(&key);
+                        (key, result)
+                    },
+                    |studio, _, _, (key, result)| {
+                        studio.handle(Msg::Captions(CaptionsMsg::KeySaved { key, result }));
+                    },
+                );
+            }
+            CaptionsMsg::SaveKey => {}
+            CaptionsMsg::KeySaved { key, result } => {
+                self.key_busy = false;
+                match result {
+                    Ok(()) => {
+                        self.key_saved = self.api_key == key;
+                        self.message.clear();
+                        studio.notify(&t("captions.apiKeySaved"), false);
+                    }
+                    Err(error) => self.message = error,
+                }
+            }
+            CaptionsMsg::ForgetKey if !self.key_busy => {
+                self.key_busy = true;
+                spawn(elevenlabs::forget_key, |studio, _, _, result| {
+                    studio.handle(Msg::Captions(CaptionsMsg::KeyForgotten(result)));
+                });
+            }
+            CaptionsMsg::ForgetKey => {}
+            CaptionsMsg::KeyForgotten(result) => {
+                self.key_busy = false;
+                match result {
+                    Ok(()) => {
+                        self.api_key = ApiKey::default();
+                        self.key_saved = false;
+                        self.message.clear();
+                    }
+                    Err(error) => self.message = error,
+                }
+            }
             CaptionsMsg::PlacementChanged(index) => {
                 self.placement = (index.max(0) as usize).min(2);
             }
             CaptionsMsg::SizeChanged(index) => self.size = (index.max(0) as usize).min(2),
             CaptionsMsg::Begin => {
+                if self.running || studio.host.transcriber.is_busy() {
+                    return;
+                }
                 if self.from_voice {
                     self.run_sound(studio);
                 } else {
@@ -182,13 +295,20 @@ impl CaptionsPane {
                 }
             }
             CaptionsMsg::Cancel => {
+                self.cancel.store(true, Ordering::Relaxed);
                 studio.host.transcriber.cancel();
-                self.running = false;
-                self.open = false;
+                self.cancelling = true;
+                self.message.clear();
             }
             CaptionsMsg::Progress(stage) => self.pace.report(stage),
             CaptionsMsg::Finished(result) => {
                 self.running = false;
+                if self.cancelling {
+                    self.cancelling = false;
+                    self.subject = None;
+                    self.open = false;
+                    return;
+                }
                 let subject = self.subject.take();
                 if let (Ok(_), Some(subject)) = (&result, &subject) {
                     self.timings
@@ -199,23 +319,8 @@ impl CaptionsPane {
                         let Some(subject) = subject else {
                             return;
                         };
-                        let look = subject.look;
                         let base = studio.prefs.title_style.clone();
-                        let commands: Vec<Command> = segments
-                            .into_iter()
-                            .filter_map(|segment| {
-                                let text = segment.text.trim().to_owned();
-                                (!text.is_empty()).then(|| {
-                                    caption_clip(
-                                        text,
-                                        subject.start + segment.start / subject.speed,
-                                        ((segment.end - segment.start) / subject.speed).max(0.2),
-                                        look,
-                                        base.as_ref(),
-                                    )
-                                })
-                            })
-                            .collect();
+                        let commands = transcription_commands(segments, &subject, base.as_ref());
                         let count = commands.len();
                         self.open = false;
                         if count == 0 {
@@ -412,11 +517,39 @@ impl CaptionsPane {
             clip,
             chosen_with: studio.sole_selection(),
             model,
+            elevenlabs: studio.prefs.captions_elevenlabs,
+            cleanup: studio.prefs.captions_cleanup,
+            language: match studio.prefs.captions_language.as_deref() {
+                Some("ru") => 1,
+                Some("en") => 2,
+                _ => 0,
+            },
+            api_key: std::mem::take(&mut self.api_key),
+            key_loaded: self.key_loaded,
+            key_saved: self.key_saved,
+            key_busy: self.key_busy,
             placement: 0,
             size: 1,
             timings: std::mem::take(&mut self.timings),
             ..CaptionsPane::default()
         };
+        self.load_key();
+    }
+
+    fn load_key(&mut self) {
+        if self.elevenlabs && !self.key_loaded {
+            self.key_loaded = true;
+            self.key_busy = true;
+            spawn(elevenlabs::load_key, |studio, _, _, result| {
+                studio.handle(Msg::Captions(CaptionsMsg::KeyLoaded(result)));
+            });
+        }
+    }
+
+    /// Stop a scheduled upload when its project closes, even if its worker
+    /// has not claimed the transcriber slot yet.
+    pub fn cancel_pending(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
     }
 
     /// The clip the panel transcribes, and the one its list shows - the
@@ -482,10 +615,18 @@ impl CaptionsPane {
             self.message = t("captions.clipHasNoFile");
             return;
         };
-        let Some((model, megabytes)) = installed(&studio.settings.transcribers)
+        let local = installed(&studio.settings.transcribers)
             .get(self.model)
-            .map(|model| (model.id.clone(), model.megabytes))
-        else {
+            .map(|model| (model.id.clone(), model.megabytes));
+        let (model, megabytes) = if self.elevenlabs {
+            if let Err(error) = self.api_key.validate() {
+                self.message = error;
+                return;
+            }
+            ("elevenlabs:scribe_v2".to_owned(), 0.0)
+        } else if let Some(local) = local {
+            local
+        } else {
             self.message = t("captions.downloadTranscriberModelFirst");
             return;
         };
@@ -513,11 +654,21 @@ impl CaptionsPane {
         let per_window = learned
             .per_unit
             .unwrap_or(0.3 + megabytes * WINDOW_SECONDS_PER_MB);
-        self.pace = Pace::new(vec![
-            (Stage::Reading, 0.2 + request.window as f32 / 400.0),
-            (Stage::Loading, load),
-            (Stage::Working, windows * per_window),
-        ]);
+        self.pace = Pace::new(if self.elevenlabs {
+            vec![
+                (Stage::Reading, 0.2 + request.window as f32 / 400.0),
+                (
+                    Stage::Working,
+                    learned.per_unit.map_or(15.0, |seconds| seconds * windows),
+                ),
+            ]
+        } else {
+            vec![
+                (Stage::Reading, 0.2 + request.window as f32 / 400.0),
+                (Stage::Loading, load),
+                (Stage::Working, windows * per_window),
+            ]
+        });
         self.subject = Some(Subject {
             start: clip.start,
             speed: clip.speed,
@@ -526,15 +677,39 @@ impl CaptionsPane {
             windows,
         });
         self.running = true;
+        self.cancelling = false;
         self.message.clear();
+        let cloud = self.elevenlabs;
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.cancel = Arc::clone(&cancel);
+        let key = self.api_key.clone();
+        let language = language(self.language);
+        let cleanup = self.cleanup;
         let epoch = crate::host::project_epoch();
         spawn_in_project(
             move || {
-                transcriber.transcribe(&dirs, &request, move |stage| {
+                let progress = move |stage| {
                     on_ui_in_project(epoch, move |studio, _, _| {
                         studio.handle(Msg::Captions(CaptionsMsg::Progress(stage)));
                     });
-                })
+                };
+                let segments = if cloud {
+                    transcriber.transcribe_elevenlabs(
+                        &request,
+                        &key,
+                        elevenlabs::Options {
+                            language,
+                            clean_speech: cleanup.clean_speech,
+                        },
+                        cancel,
+                        progress,
+                    )
+                } else if cancel.load(Ordering::Relaxed) {
+                    Err("transcription cancelled".to_owned())
+                } else {
+                    transcriber.transcribe(&dirs, &request, progress)
+                };
+                segments.map(|segments| cleanup.apply(segments))
             },
             |studio, _, _, result| studio.handle(Msg::Captions(CaptionsMsg::Finished(result))),
         );
@@ -562,6 +737,15 @@ impl CaptionsPane {
             source,
             text: self.text.as_str().into(),
             model: self.model as i32,
+            provider: i32::from(self.elevenlabs),
+            language: self.language as i32,
+            strip_punctuation: self.cleanup.strip_punctuation,
+            clean_speech: self.cleanup.clean_speech,
+            api_key: self.api_key.value().into(),
+            key_saved: self.key_saved,
+            key_busy: self.key_busy,
+            can_save_key: elevenlabs::CAN_SAVE_KEY,
+            cancelling: self.cancelling,
             placement: self.placement as i32,
             size: self.size as i32,
             running: self.running,
@@ -569,16 +753,65 @@ impl CaptionsPane {
             ceiling: self.pace.ceiling,
             step: self.pace.step,
             left: self.pace.left,
-            stage: match self.pace.stage() {
-                Some(Stage::Loading) => t("captions.loadingTheModel"),
-                Some(Stage::Working) => t("captions.transcribing"),
-                _ => t("captions.readingTheSound"),
+            stage: if self.cancelling {
+                t("captions.cancelling")
+            } else {
+                match self.pace.stage() {
+                    Some(Stage::Loading) => t("captions.loadingTheModel"),
+                    Some(Stage::Working) if self.elevenlabs => t("captions.transcribingCloud"),
+                    Some(Stage::Working) => t("captions.transcribing"),
+                    _ => t("captions.readingTheSound"),
+                }
             }
             .into(),
-            ready: !installed(&studio.settings.transcribers).is_empty(),
+            ready: if self.elevenlabs {
+                !self.key_busy && self.api_key.validate().is_ok()
+            } else {
+                installed(&studio.settings.transcribers)
+                    .get(self.model)
+                    .is_some()
+            },
             message: self.message.as_str().into(),
         }
     }
+}
+
+fn language(index: usize) -> Option<&'static str> {
+    match index {
+        1 => Some("ru"),
+        2 => Some("en"),
+        _ => None,
+    }
+}
+
+/// Timed words from Scribe can form very short sentences. Extending those
+/// to Whisper's display minimum would overlap the next cue and push it to
+/// another title track. Keep their timing, with only the engine's floor.
+fn transcription_commands(
+    segments: Vec<Segment>,
+    subject: &Subject,
+    base: Option<&TextStyle>,
+) -> Vec<Command> {
+    let minimum = if subject.model.starts_with("elevenlabs:") {
+        0.0
+    } else {
+        0.2
+    };
+    segments
+        .into_iter()
+        .filter_map(|segment| {
+            let text = segment.text.trim().to_owned();
+            (!text.is_empty()).then(|| {
+                caption_clip(
+                    text,
+                    subject.start + segment.start / subject.speed,
+                    ((segment.end - segment.start) / subject.speed).max(minimum),
+                    subject.look,
+                    base,
+                )
+            })
+        })
+        .collect()
 }
 
 /// Imported cues keep the file's timing, including captions shorter than
@@ -866,6 +1099,47 @@ fn wrap_caption(sentence: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{script_captions, source_label};
+
+    #[test]
+    fn cloud_cues_keep_speed_and_offset_without_overlapping_short_sentences() {
+        let subject = super::Subject {
+            start: 12.0,
+            speed: 2.0,
+            look: (0.35, 0.05),
+            model: "elevenlabs:scribe_v2".into(),
+            windows: 1.0,
+        };
+        let segments = vec![
+            super::Segment {
+                start: 0.5,
+                end: 0.7,
+                text: "Да.".into(),
+            },
+            super::Segment {
+                start: 0.75,
+                end: 0.95,
+                text: "Нет.".into(),
+            },
+        ];
+        let mut editor = concat_project::Editor::new();
+        editor
+            .apply(concat_project::Command::Batch {
+                commands: super::transcription_commands(segments, &subject, None),
+            })
+            .unwrap();
+        let cues = concat_project::srt::title_cues(editor.project().active(), None);
+        assert_eq!(cues.len(), 2);
+        assert!((cues[0].start - 12.25).abs() < 1e-9);
+        assert!((cues[0].end - 12.35).abs() < 1e-9);
+        assert!((cues[1].start - 12.375).abs() < 1e-9);
+        assert!((cues[1].end - 12.475).abs() < 1e-9);
+        assert_eq!(
+            concat_project::srt::title_lanes(editor.project().active()),
+            1
+        );
+        assert!(editor.undo());
+        assert!(editor.project().active().clips.is_empty());
+    }
 
     #[test]
     fn imported_srt_preserves_short_cues_and_multiline_text() {

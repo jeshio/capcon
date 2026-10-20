@@ -35,6 +35,11 @@ cd src && cargo run -p concat
 That is the editor window. Everything - the engine, the host layer and the
 Slint UI - is one Cargo workspace under `src/`.
 
+For repeated native development on macOS/Linux, use `./dev run` or `./dev build`
+from `src/` (Python 3.11+). It keeps the quick profile's working incremental
+cache and trims old variants. Focused tests use `./dev test -p <crate> --lib`.
+See [the local build guide](docs/BUILDING-CAPCON.md) for the cache policy.
+
 ## Layout
 
 | Path | What lives there |

@@ -32,6 +32,7 @@ mod ui {
 }
 
 mod batch_volume;
+mod caption_style;
 mod chips;
 mod dock;
 mod fonts;
@@ -43,6 +44,8 @@ mod i18n;
 /// The iPhone's pickers and its way to Photos; see the module.
 #[cfg(target_os = "ios")]
 mod ios;
+#[cfg(not(target_os = "android"))]
+mod keyboard;
 mod keymap;
 mod meters;
 mod platform;
@@ -411,6 +414,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         editor.set_dividers(ModelRc::from(models.dividers.clone()));
         app.set_recents(ModelRc::from(models.recents.clone()));
         editor.set_text_presets(ModelRc::from(models.text_presets.clone()));
+        editor.set_text_style_names(ModelRc::from(models.text_style_names.clone()));
         editor.set_style_presets(ModelRc::from(models.style_presets.clone()));
         editor.set_language_presets(ModelRc::from(models.language_presets.clone()));
         editor.set_font_families(ModelRc::from(models.font_families.clone()));
@@ -846,6 +850,12 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // the answer later, on the window's thread.
     editor.on_text_style_default(on_window!(|state| {
         state.use_title_style_for_new();
+    }));
+    editor.on_text_style_preset(on_window!(|state, index: i32| {
+        state.apply_title_preset(index);
+    }));
+    editor.on_text_style_track(on_window!(|state| {
+        state.apply_title_style_to_track();
     }));
     editor.on_import_font(|| {
         Shell::with(|shell, _| {
@@ -2024,6 +2034,29 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     }));
     app.on_captions_model_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Captions(CaptionsMsg::ModelChanged(index)));
+    }));
+    app.on_captions_provider_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Captions(CaptionsMsg::ProviderChanged(index)));
+    }));
+    app.on_captions_language_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Captions(CaptionsMsg::LanguageChanged(index)));
+    }));
+    app.on_captions_strip_punctuation_changed(on_window!(|state, on: bool| {
+        state.handle(Msg::Captions(CaptionsMsg::StripPunctuationChanged(on)));
+    }));
+    app.on_captions_clean_speech_changed(on_window!(|state, on: bool| {
+        state.handle(Msg::Captions(CaptionsMsg::CleanSpeechChanged(on)));
+    }));
+    app.on_captions_key_edited(on_window!(|state, text: slint::SharedString| {
+        state.handle(Msg::Captions(CaptionsMsg::KeyEdited(
+            concat_speech::elevenlabs::ApiKey::new(text.to_string()),
+        )));
+    }));
+    app.on_captions_save_key(on_window!(|state| {
+        state.handle(Msg::Captions(CaptionsMsg::SaveKey));
+    }));
+    app.on_captions_forget_key(on_window!(|state| {
+        state.handle(Msg::Captions(CaptionsMsg::ForgetKey));
     }));
     app.on_captions_placement_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Captions(CaptionsMsg::PlacementChanged(index)));
