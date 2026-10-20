@@ -458,8 +458,10 @@ impl ColorSignal {
             Transfer::BT709 => "bt709",
             _ => "auto",
         };
+        // `scale` has its own AVOption names: the NCL matrix is `bt2020`,
+        // not av_color_space_name's `bt2020nc` (nor zscale's spelling).
         let matrix = match self.matrix {
-            Space::BT2020NCL => "bt2020nc",
+            Space::BT2020NCL => "bt2020",
             Space::BT2020CL => "bt2020c",
             Space::BT709 => "bt709",
             _ => "auto",
@@ -495,10 +497,11 @@ impl ColorSignal {
     /// transfer are left as they are, for the GPU to convert.
     fn native_args(self) -> String {
         use ffmpeg::color::{Range, Space};
+        // The scale filter's option names, as in `bt709_args` above.
         let matrix = match self.matrix {
             Space::BT2020CL => "bt2020c",
             Space::BT709 => "bt709",
-            _ => "bt2020nc",
+            _ => "bt2020",
         };
         let range = match self.range {
             Range::JPEG => "pc",
@@ -1381,7 +1384,7 @@ mod tests {
         };
         assert!(hdr.is_wide() && hdr.is_hdr());
         let spec = video_filter(0, &options, 640, 360, Some(&hdr));
-        assert!(spec.starts_with("scale=640:360:flags=bilinear:in_primaries=bt2020:in_transfer=smpte2084:in_color_matrix=bt2020nc:in_range=tv:out_primaries=bt709"), "{spec}");
+        assert!(spec.starts_with("scale=640:360:flags=bilinear:in_primaries=bt2020:in_transfer=smpte2084:in_color_matrix=bt2020:in_range=tv:out_primaries=bt709"), "{spec}");
         assert!(spec.contains("intent=perceptual,format=rgba"), "{spec}");
         // wide gamut with an SDR curve converts too, and the untagged
         // half of it is left to the frames
