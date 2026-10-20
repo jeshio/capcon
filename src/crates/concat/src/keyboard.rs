@@ -20,10 +20,28 @@ pub(crate) struct PhysicalShortcuts {
 }
 
 impl PhysicalShortcuts {
-    /// Native modifier state, used only to distinguish commands from typing.
-    /// Slint still receives the original modifier events and applies its own
-    /// Command/Control swap on Apple platforms.
-    pub(crate) fn modifiers_changed(&mut self, modifiers: ModifiersState) {
+    /// Keep Slint's modifier state in step with the native flags too. Native
+    /// menus and injected keystrokes can change flags without a modifier-key
+    /// event; otherwise a translated Command+W arrives as an ordinary W.
+    pub(crate) fn modifiers_changed(
+        &mut self,
+        window: Option<&slint::Window>,
+        modifiers: ModifiersState,
+    ) {
+        if let Some(window) = window {
+            for (key, pressed) in modifier_changes(
+                self.modifiers,
+                modifiers,
+                cfg!(any(target_os = "macos", target_os = "ios")),
+            ) {
+                let text = key.into();
+                window.dispatch_event(if pressed {
+                    WindowEvent::KeyPressed { text }
+                } else {
+                    WindowEvent::KeyReleased { text }
+                });
+            }
+        }
         self.modifiers = modifiers;
     }
 
@@ -78,6 +96,25 @@ impl PhysicalShortcuts {
         });
         true
     }
+}
+
+fn modifier_changes(
+    before: ModifiersState,
+    after: ModifiersState,
+    apple: bool,
+) -> impl Iterator<Item = (slint::platform::Key, bool)> {
+    use ModifiersState as M;
+    use slint::platform::Key;
+    [
+        (M::SHIFT, Key::Shift),
+        (M::ALT, Key::Alt),
+        (M::CONTROL, if apple { Key::Meta } else { Key::Control }),
+        (M::SUPER, if apple { Key::Control } else { Key::Meta }),
+    ]
+    .into_iter()
+    .filter_map(move |(flag, key)| {
+        (before.contains(flag) != after.contains(flag)).then_some((key, after.contains(flag)))
+    })
 }
 
 fn text_input_has_focus(window: &slint::Window) -> bool {
@@ -188,6 +225,31 @@ fn physical_text(code: KeyCode, shift: bool) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_command_flags_reach_slint_without_modifier_key_events() {
+        use ModifiersState as M;
+        use slint::platform::Key;
+        let pressed: Vec<_> = modifier_changes(M::empty(), M::SUPER | M::SHIFT, true).collect();
+        assert_eq!(pressed, [(Key::Shift, true), (Key::Control, true)]);
+        let released: Vec<_> = modifier_changes(M::SUPER | M::SHIFT, M::empty(), true).collect();
+        assert_eq!(released, [(Key::Shift, false), (Key::Control, false)]);
+        assert_eq!(modifier_changes(M::SUPER, M::SUPER, true).count(), 0);
+    }
+
+    #[test]
+    fn control_and_meta_follow_the_platform_modifier_mapping() {
+        use ModifiersState as M;
+        use slint::platform::Key;
+        for (apple, expected) in [
+            (false, [(Key::Control, true), (Key::Meta, true)]),
+            (true, [(Key::Meta, true), (Key::Control, true)]),
+        ] {
+            let changes: Vec<_> =
+                modifier_changes(M::empty(), M::CONTROL | M::SUPER, apple).collect();
+            assert_eq!(changes, expected);
+        }
+    }
 
     #[test]
     fn all_letter_positions_have_stable_lowercase_names() {

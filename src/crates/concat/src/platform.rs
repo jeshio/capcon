@@ -268,7 +268,8 @@ impl CustomApplicationHandler for DropHandler {
         }
         match event {
             WindowEvent::ModifiersChanged(modifiers) => {
-                self.keyboard.modifiers_changed(modifiers.state());
+                self.keyboard
+                    .modifiers_changed(slint_window, modifiers.state());
             }
             WindowEvent::Focused(false) => self.keyboard.focus_lost(),
             WindowEvent::KeyboardInput {
