@@ -692,7 +692,6 @@
   "studio.clipsLostAnimations": "{0} se moviam com animações predefinidas que esta versão não tem mais; os quadros-chave fazem o mesmo trabalho. Salve para manter a mudança.",
   "studio.clipsNowForwards": "{0} tocavam de trás para frente numa versão anterior e agora tocam para frente. Selecione um e toque em Reverter na bandeja para invertê-lo de novo; salve para manter a mudança.",
   "studio.closeProject": "Fechar projeto",
-  "studio.closeWindow": "Fechar janela",
   "studio.couldNotExportAudio": "Não foi possível exportar o áudio: {0}",
   "studio.couldNotImport": "Não foi possível importar {0}: {1}",
   "studio.couldNotRead": "Não foi possível ler {0}",

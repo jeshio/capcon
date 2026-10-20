@@ -692,7 +692,6 @@
   "studio.clipsLostAnimations": "{0} đã di chuyển cùng các hoạt ảnh đặt sẵn mà phiên bản này không còn hỗ trợ; điểm khóa có thể thay thế chúng. Hãy lưu để giữ thay đổi.",
   "studio.clipsNowForwards": "{0} từng phát ngược trong phiên bản trước và hiện phát xuôi. Chọn clip rồi nhấn Đảo ngược trên khay để đảo lại; lưu để giữ thay đổi.",
   "studio.closeProject": "Đóng dự án",
-  "studio.closeWindow": "Đóng cửa sổ",
   "studio.couldNotExportAudio": "Không thể xuất âm thanh: {0}",
   "studio.couldNotImport": "Không thể nhập {0}: {1}",
   "studio.couldNotRead": "Không thể đọc {0}",

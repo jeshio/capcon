@@ -692,7 +692,6 @@
   "studio.clipsLostAnimations": "{0}: te klipy poruszały się według gotowych animacji, których ta wersja już nie ma; to samo robią klatki kluczowe. Zapisz, aby zachować zmianę.",
   "studio.clipsNowForwards": "{0}: te klipy w starszej wersji były odtwarzane od tyłu, a teraz są odtwarzane do przodu. Zaznacz jeden i naciśnij Odwróć na pasku, aby znów go odwrócić; zapisz, aby zachować zmianę.",
   "studio.closeProject": "Zamknij projekt",
-  "studio.closeWindow": "Zamknij okno",
   "studio.couldNotExportAudio": "Nie udało się wyeksportować dźwięku: {0}",
   "studio.couldNotImport": "Nie udało się zaimportować {0}: {1}",
   "studio.couldNotRead": "Nie udało się odczytać {0}",

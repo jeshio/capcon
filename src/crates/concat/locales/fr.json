@@ -692,7 +692,6 @@
   "studio.clipsLostAnimations": "{0} bougeaient avec des animations prédéfinies que cette version n'a plus ; les images clés font le même travail. Enregistrez pour conserver le changement.",
   "studio.clipsNowForwards": "{0} étaient lus à l'envers dans une version précédente et le sont maintenant à l'endroit. Sélectionnez-en un et appuyez sur Inverser dans la barre pour l'inverser à nouveau ; enregistrez pour conserver le changement.",
   "studio.closeProject": "Fermer le projet",
-  "studio.closeWindow": "Fermer la fenêtre",
   "studio.couldNotExportAudio": "Impossible d’exporter l’audio : {0}",
   "studio.couldNotImport": "Could not import {0}: {1}",
   "studio.couldNotRead": "Lecture impossible de {0}",

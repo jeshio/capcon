@@ -692,7 +692,6 @@
   "studio.clipsLostAnimations": "{0} bewogen met vooraf ingestelde animaties, die deze versie niet meer heeft; sleutelframes doen hetzelfde werk. Sla op om de wijziging te behouden.",
   "studio.clipsNowForwards": "{0} speelden in een eerdere versie achterstevoren af en spelen nu vooruit. Selecteer er een en druk op Omkeren in de balk om hem weer om te keren; sla op om de wijziging te behouden.",
   "studio.closeProject": "Project sluiten",
-  "studio.closeWindow": "Venster sluiten",
   "studio.couldNotExportAudio": "Kan de audio niet exporteren: {0}",
   "studio.couldNotImport": "Kan {0} niet importeren: {1}",
   "studio.couldNotRead": "Kan {0} niet lezen",

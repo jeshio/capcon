@@ -692,7 +692,6 @@
   "studio.clipsLostAnimations": "{0} bergerak dengan animasi preset yang tidak ada lagi di versi ini; keyframe melakukan hal yang sama. Simpan untuk mempertahankan perubahan.",
   "studio.clipsNowForwards": "{0} diputar mundur di versi sebelumnya dan kini diputar maju. Pilih salah satu lalu tekan Balik di baki untuk membaliknya lagi; simpan untuk mempertahankan perubahan.",
   "studio.closeProject": "Tutup proyek",
-  "studio.closeWindow": "Tutup jendela",
   "studio.couldNotExportAudio": "Tidak dapat mengekspor audio: {0}",
   "studio.couldNotImport": "Tidak dapat mengimpor {0}: {1}",
   "studio.couldNotRead": "Tidak dapat membaca {0}",

@@ -692,7 +692,6 @@
   "studio.clipsLostAnimations": "{0} はこのバージョンにはないプリセットアニメーションで動いていました。キーフレームで同じことができます。変更を残すには保存してください。",
   "studio.clipsNowForwards": "{0} は以前のバージョンで逆再生されていましたが、今は順再生になります。もう一度逆にするには、クリップを選んでトレイの「逆再生」を押してください。変更を残すには保存してください。",
   "studio.closeProject": "プロジェクトを閉じる",
-  "studio.closeWindow": "ウィンドウを閉じる",
   "studio.couldNotExportAudio": "音声を書き出せませんでした : {0}",
   "studio.couldNotImport": "{0} を読み込めませんでした : {1}",
   "studio.couldNotRead": "{0} を読み込めませんでした",

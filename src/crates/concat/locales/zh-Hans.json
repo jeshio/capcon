@@ -692,7 +692,6 @@
   "studio.clipsLostAnimations": "{0} 使用了本版本已不再提供的预设动画；关键帧可以实现同样的效果。保存即可保留此更改。",
   "studio.clipsNowForwards": "{0} 在早期版本中倒放，现在改为正放。选中一个并按托盘上的“倒放”即可再次倒放；保存即可保留此更改。",
   "studio.closeProject": "关闭项目",
-  "studio.closeWindow": "关闭窗口",
   "studio.couldNotExportAudio": "无法导出音频：{0}",
   "studio.couldNotImport": "无法导入 {0}：{1}",
   "studio.couldNotRead": "无法读取 {0}",

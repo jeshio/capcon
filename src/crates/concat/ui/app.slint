@@ -482,14 +482,13 @@ export component App inherits Window {
             keys: @keys(Control + O);
             activated => { root.app-menu-selected("open"); }
         }
-        // ⌘W closes the window on a Mac. Elsewhere Ctrl+W closes the
-        // document - the project - and Ctrl+Q quits; Windows' Alt+F4 is
-        // the system's, and arrives as the window's close request.
+        // Close the document and return to the launch screen. Quitting is
+        // separate: the Mac's native ⌘Q, or Ctrl+Q on other desktops.
         KeyBinding {
             keys: @keys(Control + W);
-            enabled: root.macos || !root.on-start;
+            enabled: !root.on-start;
             activated => {
-                root.app-menu-selected(root.macos ? "close-window" : "close-project");
+                root.app-menu-selected("close-project");
             }
         }
         KeyBinding {

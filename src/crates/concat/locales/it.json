@@ -692,7 +692,6 @@
   "studio.clipsLostAnimations": "{0} si muovevano con animazioni predefinite che questa versione non ha più; i fotogrammi chiave fanno lo stesso lavoro. Salva per mantenere la modifica.",
   "studio.clipsNowForwards": "{0} venivano riprodotte al contrario in una versione precedente e ora vanno in avanti. Selezionane una e premi Inverti nella barra per invertirla di nuovo; salva per mantenere la modifica.",
   "studio.closeProject": "Chiudi progetto",
-  "studio.closeWindow": "Chiudi finestra",
   "studio.couldNotExportAudio": "Impossibile esportare l’audio: {0}",
   "studio.couldNotImport": "Could not import {0}: {1}",
   "studio.couldNotRead": "Impossibile leggere {0}",

@@ -17,7 +17,7 @@ use concat_host::export::{self, ExportSpec};
 use concat_media::ColorRange;
 
 use crate::format::{bytes, eta};
-use crate::host::{on_ui, spawn};
+use crate::host::{on_ui, project_epoch, spawn_in_project};
 use crate::i18n::{self, t, tf};
 use crate::panes::Msg;
 use crate::platform;
@@ -487,7 +487,8 @@ impl ExportPane {
         // None there or without a GPU, and the render then opens what it
         // can.
         let compositor = studio.host.monitor.off_thread();
-        spawn(
+        let epoch = project_epoch();
+        spawn_in_project(
             move || {
                 let job = job;
                 let preparing = std::time::Instant::now();
@@ -514,7 +515,9 @@ impl ExportPane {
                         other => other.to_owned(),
                     };
                     on_ui(move |studio, _, _| {
-                        studio.handle(Msg::Export(ExportMsg::Progress { fraction, stage }));
+                        if project_epoch() == epoch {
+                            studio.handle(Msg::Export(ExportMsg::Progress { fraction, stage }));
+                        }
                     });
                 })
             },

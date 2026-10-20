@@ -179,8 +179,8 @@ pub fn smoke() -> Result<(), slint::PlatformError> {
 /// hiding the window, quitting the loop, starting a replacement build - runs
 /// only when that write landed.
 ///
-/// Every path out goes through this: the title bar's X, the system's close
-/// request, File › Close Window and a version switch. Before it existed, a
+/// Quitting the app or switching versions goes through this. A window close
+/// with an open project returns to Start first. Before this gate existed, a
 /// save that failed still hid the window and quit, taking whatever the
 /// project held with it; a failure here leaves the session, its running jobs
 /// and the window exactly as they were, and returns the reason.
@@ -193,6 +193,22 @@ pub(crate) fn close_window(
         leave();
     }
     result
+}
+
+/// A window close first closes its document. Keep the same window on the
+/// launch screen; a failed save keeps the document and its error visible.
+/// False means no project was open, so the caller may close the window.
+fn close_project_to_start(shell: &Shell, app: &App) -> bool {
+    let mut state = shell.studio.borrow_mut();
+    if state.session.is_none() {
+        return false;
+    }
+    if let Err(error) = state.close_project() {
+        log::warn!("close: project stays open because saving failed: {error}");
+    }
+    state.refresh_art();
+    state.publish(app, &shell.models);
+    true
 }
 
 /// [`run_with_project`], or [`smoke`] when `smoke` is set.
@@ -521,8 +537,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         }
     });
     // The strip's own window buttons, on the platforms whose decorations
-    // were taken off. Close goes the way the File menu's Close does - the
-    // project is shut first, so an autosave in flight is not orphaned.
+    // were taken off. Close returns to Start while a project is open.
     app.on_titlebar_minimize({
         let weak = app.as_weak();
         move || {
@@ -534,6 +549,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     app.on_titlebar_close(|| {
         log::info!("close: titlebar X pressed");
         Shell::with(|shell, app| {
+            if close_project_to_start(shell, &app) {
+                return;
+            }
             let outcome = close_window(
                 || shell.studio.borrow_mut().close_project(),
                 || {
@@ -554,12 +572,16 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             }
         });
     });
-    // System-driven close (Alt+F4, taskbar close): the same road out, and
-    // refused the same way when the project cannot be saved.
+    // Native window close: return to Start while a project is open, keeping
+    // the window visible. Closing the launch screen may close the window.
     app.window().on_close_requested(|| {
         log::info!("close: system close request (Alt+F4 / taskbar)");
-        let saved = std::cell::Cell::new(true);
+        let hide_window = std::cell::Cell::new(true);
         Shell::with(|shell, app| {
+            if close_project_to_start(shell, &app) {
+                hide_window.set(false);
+                return;
+            }
             let outcome = close_window(
                 || shell.studio.borrow_mut().close_project(),
                 || {
@@ -567,14 +589,14 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                 },
             );
             if let Err(error) = outcome {
-                saved.set(false);
+                hide_window.set(false);
                 log::warn!("close: not closing, project could not be saved: {error}");
                 shell.studio.borrow_mut().offer_quit_without_saving(error);
                 shell.studio.borrow_mut().refresh_art();
                 shell.studio.borrow().publish(&app, &shell.models);
             }
         });
-        if saved.get() {
+        if hide_window.get() {
             slint::CloseRequestResponse::HideWindow
         } else {
             slint::CloseRequestResponse::KeepWindowShown
@@ -2200,7 +2222,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                     }
                 }
                 if action == "close-window" {
-                    log::info!("close: File > Close Window");
+                    log::info!("close: File > Quit/Exit");
                     let outcome = close_window(
                         || shell.studio.borrow_mut().close_project(),
                         || {

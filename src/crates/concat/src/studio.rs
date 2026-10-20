@@ -8354,6 +8354,22 @@ impl Studio {
     /// Lets the open project go, unsaved: what `close_project` does once
     /// the save has landed, and what quitting without saving does instead.
     fn release_project(&mut self) {
+        // A return to the launch screen must not leave project sheets or
+        // a context menu over it. Keep each pane's preferences for next time.
+        self.open_menu = -1;
+        self.menu_target = None;
+        self.menu_media = None;
+        self.confirm = None;
+        self.project_sheet.open = false;
+        self.settings.open = false;
+        self.relink.open = false;
+        self.captions.open = false;
+        self.speech.open = false;
+        if self.export.phase == crate::ui::ExportPhase::Running {
+            self.host.exporter.cancel();
+        }
+        self.export.open = false;
+        self.export.phase = crate::ui::ExportPhase::Idle;
         self.host.cutouts.cancel();
         self.host.stabilizers.cancel();
         self.host.enhancers.cancel();
@@ -11449,26 +11465,18 @@ impl Studio {
                     true,
                 ),
                 rule(),
-                // The last row is each platform's own word for leaving:
-                // Close Window on a Mac, where ⌘W is it; Exit on Windows,
-                // where Alt+F4 is; Quit on Linux, with Ctrl+Q. Off the Mac
-                // Ctrl+W closes the document instead, which is the project.
+                // Closing the project returns to Start. Quitting the app
+                // is a separate command on every desktop.
                 row(
                     "close-project",
                     t("studio.closeProject"),
                     Glyph::Import,
-                    &if platform::MACOS {
-                        String::new()
-                    } else {
-                        platform::keys(&["Control", "W"])
-                    },
-                    true,
+                    &platform::keys(&["Control", "W"]),
+                    self.session.is_some(),
                 ),
                 MenuItemData {
                     id: "close-window".into(),
-                    label: if platform::MACOS {
-                        t("studio.closeWindow")
-                    } else if cfg!(windows) {
+                    label: if cfg!(windows) {
                         t("studio.exit")
                     } else {
                         t("studio.quit")
@@ -11477,7 +11485,7 @@ impl Studio {
                     kind: MenuRow::Action,
                     glyph: Glyph::Close,
                     shortcut: if platform::MACOS {
-                        platform::keys(&["Control", "W"])
+                        platform::keys(&["Control", "Q"])
                     } else if cfg!(windows) {
                         platform::keys(&["Alt", "F4"])
                     } else {
