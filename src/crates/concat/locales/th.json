@@ -265,6 +265,7 @@
   "export.format": "รูปแบบ",
   "export.halfTheSize": "ขนาดครึ่งเดียว",
   "export.hardware": "ฮาร์ดแวร์",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "กำลังมิกซ์เสียง",
   "export.nameNeedsToBeAFileName": "ชื่อต้องเป็นชื่อไฟล์ที่ใช้ได้: ห้ามว่าง และห้ามมี / \\ : * ? \" < > |",
   "export.notOnThisDevice": "ไม่มีในอุปกรณ์นี้",

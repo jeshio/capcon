@@ -265,6 +265,7 @@
   "export.format": "Формат",
   "export.halfTheSize": "Вдвое меньше",
   "export.hardware": "аппаратно",
+  "export.hardwareEncoding": "Аппаратное ускорение",
   "export.mixingAudio": "Сведение звука",
   "export.nameNeedsToBeAFileName": "Имя должно быть именем файла: не пустым и без / \\ : * ? \" < > |",
   "export.notOnThisDevice": "Недоступно на этом устройстве",

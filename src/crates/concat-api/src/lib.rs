@@ -710,6 +710,7 @@ impl Api {
                 .clone()
                 .unwrap_or_else(|| DEFAULT_PRESET.to_owned()),
             codec,
+            software: spec.software,
             ten_bit: spec.ten_bit.unwrap_or(false),
             rate_mode: export::RateMode::Vbr,
             bitrate_kbps: 0,

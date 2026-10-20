@@ -265,6 +265,7 @@
   "export.format": "Indeling",
   "export.halfTheSize": "Half zo groot",
   "export.hardware": "hardware",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "Audio mixen",
   "export.nameNeedsToBeAFileName": "De naam moet een bestandsnaam zijn: niet leeg, en zonder / \\ : * ? \" < > |",
   "export.notOnThisDevice": "Niet op dit apparaat",

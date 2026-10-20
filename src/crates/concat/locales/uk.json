@@ -265,6 +265,7 @@
   "export.format": "Формат",
   "export.halfTheSize": "Удвічі менший розмір",
   "export.hardware": "апаратно",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "Зведення аудіо",
   "export.nameNeedsToBeAFileName": "Назва має бути іменем файлу: не порожньою й без символів / \\ : * ? \" < > |",
   "export.notOnThisDevice": "Недоступно на цьому пристрої",

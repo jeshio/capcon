@@ -246,6 +246,7 @@ export component App inherits Window {
     callback export-browse();
     callback export-rate-changed(index: int);
     callback export-codec-changed(index: int);
+    callback export-hardware-changed(on: bool);
     callback export-ten-bit-changed(on: bool);
     callback export-hdr-changed(on: bool);
     callback export-bitrate-changed(mbps: float);
@@ -823,6 +824,7 @@ export component App inherits Window {
         browse => { root.export-browse(); }
         rate-changed(index) => { root.export-rate-changed(index); }
         codec-changed(index) => { root.export-codec-changed(index); }
+        hardware-changed(on) => { root.export-hardware-changed(on); }
         ten-bit-changed(on) => { root.export-ten-bit-changed(on); }
         hdr-changed(on) => { root.export-hdr-changed(on); }
         bitrate-changed(mbps) => { root.export-bitrate-changed(mbps); }

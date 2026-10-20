@@ -265,6 +265,7 @@
   "export.format": "फ़ॉर्मेट",
   "export.halfTheSize": "आधा साइज़",
   "export.hardware": "हार्डवेयर",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "ऑडियो मिक्स हो रहा है",
   "export.nameNeedsToBeAFileName": "नाम एक फ़ाइल नाम होना चाहिए: खाली नहीं, और इनमें से कोई चिह्न नहीं: / \\ : * ? \" < > |",
   "export.notOnThisDevice": "इस डिवाइस पर उपलब्ध नहीं",

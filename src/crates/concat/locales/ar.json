@@ -265,6 +265,7 @@
   "export.format": "الصيغة",
   "export.halfTheSize": "نصف الحجم",
   "export.hardware": "عتاد",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "جارٍ مزج الصوت",
   "export.nameNeedsToBeAFileName": "يجب أن يكون الاسم اسم ملف: غير فارغ، ولا يحتوي أيًّا من / \\ : * ? \" < > |",
   "export.notOnThisDevice": "غير متوفر على هذا الجهاز",

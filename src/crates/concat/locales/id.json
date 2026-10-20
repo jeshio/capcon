@@ -265,6 +265,7 @@
   "export.format": "Format",
   "export.halfTheSize": "Setengah ukuran",
   "export.hardware": "perangkat keras",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "Mencampur audio",
   "export.nameNeedsToBeAFileName": "Nama harus berupa nama file: tidak kosong, dan tanpa / \\ : * ? \" < > |",
   "export.notOnThisDevice": "Tidak tersedia di perangkat ini",

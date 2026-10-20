@@ -265,6 +265,7 @@
   "export.format": "Format",
   "export.halfTheSize": "Upola manje",
   "export.hardware": "hardver",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "Miksanje zvuka",
   "export.nameNeedsToBeAFileName": "Naziv mora biti naziv datoteke: ne prazan i bez / \\ : * ? \" < > |",
   "export.notOnThisDevice": "Nije na ovom uređaju",

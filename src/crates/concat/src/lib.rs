@@ -1851,6 +1851,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     app.on_export_hdr_changed(on_window!(|state, on: bool| {
         state.handle(Msg::Export(ExportMsg::HdrChanged(on)));
     }));
+    app.on_export_hardware_changed(on_window!(|state, on: bool| {
+        state.handle(Msg::Export(ExportMsg::HardwareChanged(on)));
+    }));
     app.on_export_ten_bit_changed(on_window!(|state, on: bool| {
         state.handle(Msg::Export(ExportMsg::TenBitChanged(on)));
     }));

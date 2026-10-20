@@ -22,6 +22,7 @@
 
 pub mod chains;
 pub mod flatten;
+mod pipeline;
 mod resolve;
 
 use resolve::{
@@ -42,7 +43,7 @@ use concat_core::timeline::{Clip, ClipId, MediaRef, Timeline, Track, TrackKind, 
 use concat_effects::Catalogue;
 use concat_media::audio::{self, AudioClip};
 use concat_media::{
-    DecodeOptions, Decoder, EncodeOptions, Encoder, FrameSink, FrameSource, RateMode, VideoCodec,
+    DecodeOptions, Decoder, EncodeOptions, Encoder, FrameSource, RateMode, VideoCodec,
 };
 use concat_project::model::{AppliedFilter, ClipMask, ColorSpace, Cutout};
 use concat_render::{
@@ -415,6 +416,9 @@ pub struct ExportRequest {
     /// request does not say.
     #[serde(default, deserialize_with = "codec_by_name")]
     pub codec: VideoCodec,
+    /// Prefer software compression over hardware speed. Hardware first by default.
+    #[serde(default)]
+    pub software: bool,
     /// Ten bits a channel rather than eight.
     #[serde(default)]
     pub ten_bit: bool,
@@ -1639,7 +1643,7 @@ fn render_picture(
         bitrate_kbps: request.bitrate_kbps,
         ten_bit: request.ten_bit,
         color_range: request.color_range,
-        hardware: true,
+        hardware: !request.software,
         threads: 0,
     };
     // An HDR file comes out of the compositor as its signal, sixteen bits a
@@ -1647,216 +1651,241 @@ fn render_picture(
     let signal = output_of(request.color_space);
     let hdr = request.hdr && signal != Signal::Sdr;
     compositor.deliver_hdr(hdr);
-    let mut encoder = if hdr {
-        Encoder::create_hdr(
-            destination,
-            request.width,
-            request.height,
-            rate,
-            &options,
-            signal,
-        )
-    } else {
-        Encoder::create(destination, request.width, request.height, rate, &options)
-    }
-    .map_err(|error| error.to_string())?;
-
-    // How many devices have died under this export so far; see `recovered`.
-    let mut losses = 0;
-    // When progress was last said; see `progress_due`.
-    let mut said = std::time::Instant::now();
-
-    // One decoder per clip, opened at its in-point the first time the clip is
-    // needed and dropped the moment it leaves the playhead. Every decoder is
-    // opened at `output rate / clip speed`, so pulling exactly one frame per
-    // output frame keeps each of them in step with the plan's source times
-    // without any seeking - including retimed clips.
-    let mut decoders: HashMap<ClipId, Decoder> = HashMap::new();
-    // A clip whose speed changes, or runs backwards, cannot be followed by a
-    // paced decoder: each of its frames is sought by its own source time,
-    // through a pool that keeps the reader rolling where it can.
-    let sought = concat_media::ReaderPool::with_defaults();
-
-    for index in 0..total_frames {
-        reporter.cancelled()?;
-
-        let time = rate.time_of_frame(index);
-        let plan = plan_frame(&timeline, time);
-
-        let mut layers: Vec<PlannedLayer> = Vec::with_capacity(plan.layers.len());
-        for layer in &plan.layers {
-            if !layer.paced {
-                let (decode_width, decode_height) = decode_sizes
-                    .get(&layer.clip)
-                    .copied()
-                    .unwrap_or((request.width, request.height));
-                // A frame that cannot be read ends the export with the
-                // reason, as it does on the paced path below. A time past
-                // the media's end is not that: the pool answers it with the
-                // last frame. This path used to drop a failed frame on the
-                // floor, so a reversed or retimed clip whose file had gone
-                // bad exported as a missing layer and nobody was told.
-                let frame = sought
-                    .frame_at(
-                        &layer.media,
-                        layer.source_time,
-                        decode_width,
-                        decode_height,
-                        stills.contains(&layer.clip),
-                        None,
-                        None,
-                        ranges.get(&layer.clip).copied(),
-                        // Deep where the frame goes to the GPU as it is: a
-                        // cutout cuts eight bits.
-                        !cutouts.contains_key(&layer.clip),
-                    )
-                    .map_err(|error| error.to_string())?;
-                let frame = cutouts
-                    .get(&layer.clip)
-                    .and_then(|job| job.cut(&frame, layer.source_time))
-                    .map_or(frame, std::sync::Arc::new);
-                layers.push(filled(
-                    layer,
-                    frame,
-                    tracks.get(&layer.clip).copied().unwrap_or(0),
-                    passes_at(&chains, &reveal_maps, &timeline, layer.clip, time),
-                    geometry.get(&layer.clip),
-                    shapes_at(&shapes, layer, time, rate),
-                    stabilized.get(&layer.clip),
-                ));
-                continue;
+    pipeline::run(
+        || {
+            let encoder = if hdr {
+                Encoder::create_hdr(
+                    destination,
+                    request.width,
+                    request.height,
+                    rate,
+                    &options,
+                    signal,
+                )
+            } else {
+                Encoder::create(destination, request.width, request.height, rate, &options)
             }
-            let decoder = match decoders.entry(layer.clip) {
-                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    // Aspect-correct: decode at the source's fitted size and
-                    // let the compositor place it, rather than stretching to
-                    // the frame and losing the picture's shape.
-                    let (decode_width, decode_height) = decode_sizes
-                        .get(&layer.clip)
-                        .copied()
-                        .unwrap_or((request.width, request.height));
+            .map_err(|error| error.to_string())?;
+            log::info!(
+                "export: encoder {}, {}×{}",
+                encoder.encoder_name(),
+                request.width,
+                request.height
+            );
+            Ok(encoder)
+        },
+        |send| {
+            let started = std::time::Instant::now();
+            let mut decoding = std::time::Duration::ZERO;
+            let mut drawing = std::time::Duration::ZERO;
 
-                    // A retimed clip advances the source by `speed / fps`
-                    // seconds per output frame, so the decoder must emit
-                    // frames exactly that far apart: a rate of `fps / speed`.
-                    // (At 2x, 300 output frames cover 20s of source - the
-                    // decoder emits 15 frames per source second, not 60.)
-                    let decode_rate = if layer.speed == Rational::ONE {
-                        rate
-                    } else {
-                        FrameRate::new(rate.fps() / layer.speed)
+            // How many devices have died under this export so far; see `recovered`.
+            let mut losses = 0;
+            // When progress was last said; see `progress_due`.
+            let mut said = std::time::Instant::now();
+
+            // One decoder per clip, opened at its in-point the first time the clip is
+            // needed and dropped the moment it leaves the playhead. Every decoder is
+            // opened at `output rate / clip speed`, so pulling exactly one frame per
+            // output frame keeps each of them in step with the plan's source times
+            // without any seeking - including retimed clips.
+            let mut decoders: HashMap<ClipId, Decoder> = HashMap::new();
+            // A clip whose speed changes, or runs backwards, cannot be followed by a
+            // paced decoder: each of its frames is sought by its own source time,
+            // through a pool that keeps the reader rolling where it can.
+            let sought = concat_media::ReaderPool::with_defaults();
+
+            for index in 0..total_frames {
+                reporter.cancelled()?;
+
+                let time = rate.time_of_frame(index);
+                let plan = plan_frame(&timeline, time);
+
+                let decoding_started = std::time::Instant::now();
+                let mut layers: Vec<PlannedLayer> = Vec::with_capacity(plan.layers.len());
+                for layer in &plan.layers {
+                    if !layer.paced {
+                        let (decode_width, decode_height) = decode_sizes
+                            .get(&layer.clip)
+                            .copied()
+                            .unwrap_or((request.width, request.height));
+                        // A frame that cannot be read ends the export with the
+                        // reason, as it does on the paced path below. A time past
+                        // the media's end is not that: the pool answers it with the
+                        // last frame. This path used to drop a failed frame on the
+                        // floor, so a reversed or retimed clip whose file had gone
+                        // bad exported as a missing layer and nobody was told.
+                        let frame = sought
+                            .frame_at(
+                                &layer.media,
+                                layer.source_time,
+                                decode_width,
+                                decode_height,
+                                stills.contains(&layer.clip),
+                                None,
+                                None,
+                                ranges.get(&layer.clip).copied(),
+                                // Deep where the frame goes to the GPU as it is: a
+                                // cutout cuts eight bits.
+                                !cutouts.contains_key(&layer.clip),
+                            )
+                            .map_err(|error| error.to_string())?;
+                        let frame = cutouts
+                            .get(&layer.clip)
+                            .and_then(|job| job.cut(&frame, layer.source_time))
+                            .map_or(frame, std::sync::Arc::new);
+                        layers.push(filled(
+                            layer,
+                            frame,
+                            tracks.get(&layer.clip).copied().unwrap_or(0),
+                            passes_at(&chains, &reveal_maps, &timeline, layer.clip, time),
+                            geometry.get(&layer.clip),
+                            shapes_at(&shapes, layer, time, rate),
+                            stabilized.get(&layer.clip),
+                        ));
+                        continue;
+                    }
+                    let decoder = match decoders.entry(layer.clip) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            // Aspect-correct: decode at the source's fitted size and
+                            // let the compositor place it, rather than stretching to
+                            // the frame and losing the picture's shape.
+                            let (decode_width, decode_height) = decode_sizes
+                                .get(&layer.clip)
+                                .copied()
+                                .unwrap_or((request.width, request.height));
+
+                            // A retimed clip advances the source by `speed / fps`
+                            // seconds per output frame, so the decoder must emit
+                            // frames exactly that far apart: a rate of `fps / speed`.
+                            // (At 2x, 300 output frames cover 20s of source - the
+                            // decoder emits 15 frames per source second, not 60.)
+                            let decode_rate = if layer.speed == Rational::ONE {
+                                rate
+                            } else {
+                                FrameRate::new(rate.fps() / layer.speed)
+                            };
+
+                            // Deep - an HDR clip in its own signal, converted on
+                            // the GPU - unless a cutout has to cut it in eight bits;
+                            // the decoder keeps eight bits for a chain itself.
+                            let mut options = DecodeOptions::default()
+                                .starting_at(layer.source_time)
+                                .scaled_to(decode_width, decode_height)
+                                .at_rate(decode_rate)
+                                .in_range(ranges.get(&layer.clip).copied())
+                                .deep(!cutouts.contains_key(&layer.clip));
+
+                            // A still is a one-frame stream. Without looping it would
+                            // contribute a single frame and then disappear.
+                            if stills.contains(&layer.clip) {
+                                options = options.repeating().starting_at(Rational::ZERO);
+                            }
+
+                            entry.insert(
+                                Decoder::open(&layer.media, &options)
+                                    .map_err(|error| error.to_string())?,
+                            )
+                        }
                     };
 
-                    // Deep - an HDR clip in its own signal, converted on
-                    // the GPU - unless a cutout has to cut it in eight bits;
-                    // the decoder keeps eight bits for a chain itself.
-                    let mut options = DecodeOptions::default()
-                        .starting_at(layer.source_time)
-                        .scaled_to(decode_width, decode_height)
-                        .at_rate(decode_rate)
-                        .in_range(ranges.get(&layer.clip).copied())
-                        .deep(!cutouts.contains_key(&layer.clip));
-
-                    // A still is a one-frame stream. Without looping it would
-                    // contribute a single frame and then disappear.
-                    if stills.contains(&layer.clip) {
-                        options = options.repeating().starting_at(Rational::ZERO);
+                    // A source that has run out contributes nothing rather than
+                    // aborting the export - a clip trimmed past its media's end is a
+                    // mistake in the edit, not a failure of the renderer.
+                    if let Some(frame) = decoder.next_frame().map_err(|error| error.to_string())? {
+                        // The cutout, on the decoded picture before it is placed:
+                        // the same frame both compositors then draw.
+                        let frame = match cutouts
+                            .get(&layer.clip)
+                            .and_then(|job| job.cut(&frame, layer.source_time))
+                        {
+                            Some(cut) => cut,
+                            None => frame,
+                        };
+                        layers.push(filled(
+                            layer,
+                            std::sync::Arc::new(frame),
+                            tracks.get(&layer.clip).copied().unwrap_or(0),
+                            passes_at(&chains, &reveal_maps, &timeline, layer.clip, time),
+                            geometry.get(&layer.clip),
+                            shapes_at(&shapes, layer, time, rate),
+                            stabilized.get(&layer.clip),
+                        ));
                     }
-
-                    entry.insert(
-                        Decoder::open(&layer.media, &options).map_err(|error| error.to_string())?,
-                    )
                 }
-            };
 
-            // A source that has run out contributes nothing rather than
-            // aborting the export - a clip trimmed past its media's end is a
-            // mistake in the edit, not a failure of the renderer.
-            if let Some(frame) = decoder.next_frame().map_err(|error| error.to_string())? {
-                // The cutout, on the decoded picture before it is placed:
-                // the same frame both compositors then draw.
-                let frame = match cutouts
-                    .get(&layer.clip)
-                    .and_then(|job| job.cut(&frame, layer.source_time))
-                {
-                    Some(cut) => cut,
-                    None => frame,
+                decoding += decoding_started.elapsed();
+                let drawing_started = std::time::Instant::now();
+                let frame_plan = FramePlan {
+                    time,
+                    width: request.width,
+                    height: request.height,
+                    layers: with_backdrops(
+                        layers,
+                        &backdrops,
+                        |clip| !stills.contains(&clip) && !cutouts.contains_key(&clip),
+                        &sought,
+                        (request.width, request.height),
+                    ),
+                    treatments: Vec::new(),
+                    output: output_of(request.color_space),
                 };
-                layers.push(filled(
-                    layer,
-                    std::sync::Arc::new(frame),
-                    tracks.get(&layer.clip).copied().unwrap_or(0),
-                    passes_at(&chains, &reveal_maps, &timeline, layer.clip, time),
-                    geometry.get(&layer.clip),
-                    shapes_at(&shapes, layer, time, rate),
-                    stabilized.get(&layer.clip),
-                ));
-            }
-        }
-
-        let frame_plan = FramePlan {
-            time,
-            width: request.width,
-            height: request.height,
-            layers: with_backdrops(
-                layers,
-                &backdrops,
-                |clip| !stills.contains(&clip) && !cutouts.contains_key(&clip),
-                &sought,
-                (request.width, request.height),
-            ),
-            treatments: Vec::new(),
-            output: output_of(request.color_space),
-        };
-        // The plan is kept for a second drawing: a frame drawn on a device
-        // that died under it is black, and is drawn again on the device
-        // that takes over. The copy is cheap - the pictures are shared.
-        let mut composed = composite_treated(
-            &mut EffectClock {
-                inner: &mut compositor,
-                offset: effect_offset,
-            },
-            frame_plan.clone(),
-            &treatments,
-            &transitions,
-        );
-        while compositor.lost() {
-            losses += 1;
-            let adapter = compositor.adapter_info();
-            log::error!(
-                "export: the GPU device on {} was lost drawing frame {index} of {total_frames} \
+                // The plan is kept for a second drawing: a frame drawn on a device
+                // that died under it is black, and is drawn again on the device
+                // that takes over. The copy is cheap - the pictures are shared.
+                let mut composed = composite_treated(
+                    &mut EffectClock {
+                        inner: &mut compositor,
+                        offset: effect_offset,
+                    },
+                    frame_plan.clone(),
+                    &treatments,
+                    &transitions,
+                );
+                while compositor.lost() {
+                    losses += 1;
+                    let adapter = compositor.adapter_info();
+                    log::error!(
+                        "export: the GPU device on {} was lost drawing frame {index} of {total_frames} \
                  ({:.3}s into the cut); the frame is drawn again on the next device",
-                adapter.name,
-                time.as_f64(),
+                        adapter.name,
+                        time.as_f64(),
+                    );
+                    compositor = recovered(losses, hdr)?;
+                    composed = composite_treated(
+                        &mut EffectClock {
+                            inner: &mut compositor,
+                            offset: effect_offset,
+                        },
+                        frame_plan.clone(),
+                        &treatments,
+                        &transitions,
+                    );
+                }
+                drawing += drawing_started.elapsed();
+                send(composed)?;
+
+                // Retire decoders whose clip has finished, so a long timeline does not
+                // hold an ffmpeg process open for every clip it has ever passed.
+                let live: Vec<ClipId> = plan.layers.iter().map(|layer| layer.clip).collect();
+                decoders.retain(|clip, _| live.contains(clip));
+
+                if progress_due(index, said.elapsed()) {
+                    reporter.emit(index, total_frames, "rendering");
+                    said = std::time::Instant::now();
+                }
+            }
+
+            log::info!(
+                "export: rendered {total_frames} frames in {:.3}s; decode {:.3}s, drawing/readback {:.3}s",
+                started.elapsed().as_secs_f64(),
+                decoding.as_secs_f64(),
+                drawing.as_secs_f64()
             );
-            compositor = recovered(losses, hdr)?;
-            composed = composite_treated(
-                &mut EffectClock {
-                    inner: &mut compositor,
-                    offset: effect_offset,
-                },
-                frame_plan.clone(),
-                &treatments,
-                &transitions,
-            );
-        }
-        encoder
-            .write_frame(&composed)
-            .map_err(|error| error.to_string())?;
-
-        // Retire decoders whose clip has finished, so a long timeline does not
-        // hold an ffmpeg process open for every clip it has ever passed.
-        let live: Vec<ClipId> = plan.layers.iter().map(|layer| layer.clip).collect();
-        decoders.retain(|clip, _| live.contains(clip));
-
-        if progress_due(index, said.elapsed()) {
-            reporter.emit(index, total_frames, "rendering");
-            said = std::time::Instant::now();
-        }
-    }
-
-    encoder.finish().map_err(|error| error.to_string())
+            Ok(())
+        },
+    )
 }
 
 /// How many frames apart an export says how far it has got, at most.
@@ -2383,6 +2412,7 @@ pub fn preview_plan(
         crf: 18,
         preset: String::new(),
         codec: VideoCodec::H264,
+        software: false,
         ten_bit: false,
         rate_mode: RateMode::Vbr,
         bitrate_kbps: 0,
@@ -3129,6 +3159,7 @@ mod tests {
             crf: 30,
             preset: "ultrafast".into(),
             codec: VideoCodec::H264,
+            software: false,
             ten_bit: false,
             rate_mode: RateMode::Vbr,
             bitrate_kbps: 0,
@@ -3210,6 +3241,7 @@ mod tests {
             crf: 30,
             preset: "ultrafast".into(),
             codec: VideoCodec::H264,
+            software: false,
             ten_bit: false,
             rate_mode: RateMode::Vbr,
             bitrate_kbps: 0,

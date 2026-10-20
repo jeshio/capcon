@@ -3492,15 +3492,16 @@ impl WgpuCompositor {
             target.staging.unmap();
             return Frame::from_rgba64(width, height, pixels, self.output);
         }
-        let mut frame = Frame::transparent(width, height);
+        // Every byte is copied from the mapped target below. Reserving the
+        // destination avoids clearing a whole 4K frame before overwriting it.
+        let row_bytes = width as usize * 4;
+        let mut pixels = Vec::with_capacity(row_bytes * height as usize);
         {
             // A range that will not map is a failed map, as above.
             let data = slice.get_mapped_range().ok()?;
-            let row_bytes = width as usize * 4;
-            let pixels = frame.pixels_mut();
             for row in 0..height as usize {
                 let from = &data[row * padded_row..row * padded_row + row_bytes];
-                pixels[row * row_bytes..(row + 1) * row_bytes].copy_from_slice(from);
+                pixels.extend_from_slice(from);
             }
             // The output goes to a screen or an encoder; neither has anything
             // to show through, and blending may have left alpha short of one.
@@ -3509,7 +3510,7 @@ impl WgpuCompositor {
             }
         }
         target.staging.unmap();
-        Some(frame)
+        Frame::from_rgba(width, height, pixels)
     }
 }
 

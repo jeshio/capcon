@@ -265,6 +265,7 @@
   "export.format": "形式",
   "export.halfTheSize": "半分のサイズ",
   "export.hardware": "ハードウェア",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "オーディオをミックス中",
   "export.nameNeedsToBeAFileName": "名前はファイル名にしてください。空にせず、/ \\ : * ? \" < > | は使えません",
   "export.notOnThisDevice": "このデバイスでは使用不可",

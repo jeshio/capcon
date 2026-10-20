@@ -265,6 +265,7 @@
   "export.format": "Định dạng",
   "export.halfTheSize": "Một nửa kích thước",
   "export.hardware": "phần cứng",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "Đang trộn âm thanh",
   "export.nameNeedsToBeAFileName": "Tên phải là tên tệp: không được để trống và không chứa / \\: * ? \" < > |",
   "export.notOnThisDevice": "Không có trên thiết bị này",

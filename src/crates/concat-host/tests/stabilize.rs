@@ -151,6 +151,7 @@ fn export_to(session: &Session, output: &Path) -> String {
         crf: 12,
         preset: "ultrafast".to_owned(),
         codec: VideoCodec::H264,
+        software: true,
         ten_bit: false,
         rate_mode: RateMode::Vbr,
         bitrate_kbps: 0,

@@ -30,6 +30,8 @@ pub struct ExportSpec {
     pub preset: String,
     /// What to encode to.
     pub codec: VideoCodec,
+    /// Prefer software compression over hardware speed.
+    pub software: bool,
     /// Ten bits a channel rather than eight.
     pub ten_bit: bool,
     /// VBR (the CRF carries the quality) or CBR (the bitrate is the
@@ -72,6 +74,7 @@ pub fn request(session: &Session, spec: &ExportSpec, titles: Vec<ExportClip>) ->
         crf: spec.crf,
         preset: spec.preset.clone(),
         codec: spec.codec,
+        software: spec.software,
         ten_bit: spec.ten_bit,
         rate_mode: spec.rate_mode,
         bitrate_kbps: spec.bitrate_kbps,

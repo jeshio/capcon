@@ -124,6 +124,7 @@ impl Consolidation {
             } else {
                 crate::export::VideoCodec::H264
             },
+            software: false,
             ten_bit: hdr,
             rate_mode: Default::default(),
             bitrate_kbps: 0,

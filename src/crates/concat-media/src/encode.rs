@@ -89,16 +89,14 @@ impl VideoCodec {
     /// encoders (scripts/ffmpeg-mobile.sh), and its cores are no match for
     /// its chip anyway.
     ///
-    /// On a desktop the software encoders lead, and the machine's own
-    /// comes after them for an FFmpeg built without them. With `hardware`,
-    /// the GPU's leads for HEVC and AV1: VideoToolbox on macOS, and on
+    /// On a desktop `hardware` puts the machine's own encoder first:
+    /// VideoToolbox on macOS, and on
     /// Windows and Linux NVIDIA's NVENC, Intel's Quick Sync and AMD's AMF,
     /// in that order - many times faster than x265 and, at these rates, as
     /// good to look at. Whichever of those the machine has no chip for
-    /// does not open, and the export takes the next. H.264 stays with x264
-    /// wherever it is linked: the hardware H.264 encoders spend noticeably
-    /// more bits for the same picture, and H.264 is the choice made for
-    /// compatibility, not speed. Media Foundation, Windows' own, is last:
+    /// does not open, and the export takes the next. Without `hardware`,
+    /// software leads, for callers who prefer its compression efficiency.
+    /// Media Foundation, Windows' own, is last:
     /// it runs on whatever the machine has, and says little about how.
     pub fn encoders(self, hardware: bool) -> &'static [&'static str] {
         let macos = cfg!(target_os = "macos");
@@ -118,10 +116,15 @@ impl VideoCodec {
             };
         }
         match self {
+            VideoCodec::H264 if hardware && macos => &["h264_videotoolbox", "libx264"],
             VideoCodec::H264 if macos => &["libx264", "h264_videotoolbox"],
+            VideoCodec::H264 if hardware && windows => {
+                &["h264_nvenc", "h264_qsv", "h264_amf", "libx264", "h264_mf"]
+            }
             VideoCodec::H264 if windows => {
                 &["libx264", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf"]
             }
+            VideoCodec::H264 if hardware => &["h264_nvenc", "h264_qsv", "h264_amf", "libx264"],
             VideoCodec::H264 => &["libx264", "h264_nvenc", "h264_qsv", "h264_amf"],
             VideoCodec::Hevc if hardware && macos => &["hevc_videotoolbox", "libx265"],
             VideoCodec::Hevc if macos => &["libx265", "hevc_videotoolbox"],
@@ -897,6 +900,10 @@ pub struct Encoder {
     output: format::context::Output,
     encoder: encoder::video::Encoder,
     scaler: scaling::Context,
+    /// Reused conversion buffers. The encoder can retain a YUV reference;
+    /// check ownership before reuse rather than overwriting a queued frame.
+    rgba: Video,
+    converted: Video,
     /// The encoder's time base, and the stream's after the header was
     /// written - the muxer is free to pick its own.
     encoder_time_base: ffmpeg::Rational,
@@ -1323,6 +1330,12 @@ impl Encoder {
             output,
             encoder,
             scaler,
+            rgba: Video::new(
+                if deep { Pixel::RGBA64LE } else { Pixel::RGBA },
+                width,
+                height,
+            ),
+            converted: Video::new(pixel_format, width, height),
             encoder_time_base: time_base,
             stream_time_base,
             width,
@@ -1544,16 +1557,11 @@ impl FrameSink for Encoder {
                 }),
             });
         }
-        let (pixel, bytes) = if deep {
-            (Pixel::RGBA64LE, 8)
-        } else {
-            (Pixel::RGBA, 4)
-        };
-        let mut rgba = Video::new(pixel, self.width, self.height);
+        let bytes = if deep { 8 } else { 4 };
         {
-            let stride = rgba.stride(0);
+            let stride = self.rgba.stride(0);
             let row = self.width as usize * bytes;
-            let data = rgba.data_mut(0);
+            let data = self.rgba.data_mut(0);
             for (y, source) in frame.pixels().chunks_exact(row).enumerate() {
                 data[y * stride..y * stride + row].copy_from_slice(source);
             }
@@ -1561,20 +1569,30 @@ impl FrameSink for Encoder {
         if let Some(light) = &mut self.light {
             light.measure(frame.pixels());
         }
-        let mut converted = Video::empty();
+        // SAFETY: this is a live frame owning reference-counted AVBuffers.
+        // If the encoder still owns these pixels, allocate fresh storage.
+        // av_frame_make_writable would copy the previous picture, only for
+        // the scaler to immediately overwrite every pixel of that copy.
+        if unsafe { ffmpeg::sys::av_frame_is_writable(self.converted.as_mut_ptr()) } == 0 {
+            self.converted = Video::new(self.scaler.output().format, self.width, self.height);
+        }
         self.scaler
-            .run(&rgba, &mut converted)
+            .run(&self.rgba, &mut self.converted)
             .map_err(|error| ffi::fail("convert", &self.path, error))?;
-        converted.set_pts(Some(self.written as i64));
+        self.converted.set_pts(Some(self.written as i64));
         // The frame says what its numbers span, the same as the stream
         // does: a hardware encoder reads it off the frame.
         // SAFETY: `converted` is a live frame the scaler just filled; the
         // range is a plain field the encoder reads with the picture.
         unsafe {
-            (*converted.as_mut_ptr()).color_range = self.color_range.into();
+            (*self.converted.as_mut_ptr()).color_range = self.color_range.into();
         }
-
-        self.send(Some(&converted))?;
+        // Temporarily move the buffer out to let `send` borrow the whole
+        // encoder. Video::clone would copy every YUV plane.
+        let converted = std::mem::replace(&mut self.converted, Video::empty());
+        let sent = self.send(Some(&converted));
+        self.converted = converted;
+        sent?;
         self.written += 1;
         self.drain()
     }
@@ -2119,6 +2137,56 @@ mod tests {
                 assert_eq!(codec.encodable(), codec.available(), "{codec:?}");
             }
         }
+    }
+
+    #[test]
+    fn h264_can_prefer_speed_or_software_compression() {
+        if cfg!(any(target_os = "ios", target_os = "android")) {
+            return;
+        }
+        assert_eq!(VideoCodec::H264.encoders(false)[0], "libx264");
+        assert_ne!(VideoCodec::H264.encoders(true)[0], "libx264");
+        assert!(VideoCodec::H264.encoders(true).contains(&"libx264"));
+    }
+
+    /// x264 holds frames for lookahead and B-frame reordering. Reusing the
+    /// conversion buffer must preserve every earlier picture it still owns.
+    #[test]
+    fn reused_conversion_buffers_preserve_delayed_frames() {
+        use crate::{DecodeOptions, Decoder, FrameSource};
+        ffi::init();
+        if encoder::find_by_name("libx264").is_none() {
+            return;
+        }
+        let path =
+            std::env::temp_dir().join(format!("concat-buffer-reuse-{}.mp4", std::process::id()));
+        let options = EncodeOptions {
+            hardware: false,
+            crf: 12,
+            ..Default::default()
+        };
+        let mut encoder =
+            Encoder::create(&path, 64, 64, FrameRate::THIRTY, &options).expect("opens");
+        let mut frame = Frame::black(64, 64);
+        let values: Vec<u8> = (0..24).map(|i| 20 + i * 9).collect();
+        for value in &values {
+            frame.fill([*value, 50, 80, 255]);
+            encoder.write_frame(&frame).expect("writes");
+        }
+        encoder.finish().expect("finishes");
+        drop(encoder);
+        let mut decoder = Decoder::open(&path, &DecodeOptions::default()).expect("decodes");
+        for value in values {
+            let frame = decoder.next_frame().expect("reads").expect("frame present");
+            assert!(
+                (i16::from(frame.pixels()[0]) - i16::from(value)).abs() < 12,
+                "an earlier frame was overwritten: expected {value}, got {}",
+                frame.pixels()[0]
+            );
+        }
+        assert!(decoder.next_frame().expect("end").is_none());
+        drop(decoder);
+        std::fs::remove_file(path).expect("cleans up");
     }
 
     /// The export sheet's first question opens nothing while a software

@@ -265,6 +265,7 @@
   "export.format": "格式",
   "export.halfTheSize": "缩小一半",
   "export.hardware": "硬件",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "正在混合音频",
   "export.nameNeedsToBeAFileName": "名称必须是文件名：不能为空，也不能含有 / \\ : * ? \" < > |",
   "export.notOnThisDevice": "此设备不支持",

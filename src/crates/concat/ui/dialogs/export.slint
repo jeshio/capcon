@@ -48,6 +48,8 @@ export struct ExportData {
     rate-details: [string],
     /// index into the codec list: H.264, HEVC, AV1
     codec: int,
+    hardware: bool,
+    hardware-choice: bool,
     /// Which of them this device can encode. A phone's chip may lack
     /// HEVC or AV1; the picker says so rather than failing on Export.
     h264-encodable: bool,
@@ -273,6 +275,7 @@ component OutputSection inherits DialogSection {
     callback rate-changed(index: int);
     callback bitrate-changed(mbps: float);
     callback codec-changed(index: int);
+    callback hardware-changed(on: bool);
     callback ten-bit-changed(on: bool);
     callback hdr-changed(on: bool);
 
@@ -345,6 +348,20 @@ component OutputSection inherits DialogSection {
                 root.data.av1-encodable ? I18n.t("export.smallest") : I18n.t("export.notOnThisDevice"),
             ];
             changed(index) => { root.codec-changed(index + 1); }
+        }
+    }
+
+    if root.data.hardware-choice: DialogRow {
+        label: I18n.t("export.hardwareEncoding");
+        HorizontalLayout {
+            alignment: end;
+            VerticalLayout {
+                alignment: center;
+                Switch {
+                    checked: root.data.hardware;
+                    toggled(on) => { root.hardware-changed(on); }
+                }
+            }
         }
     }
 
@@ -564,6 +581,7 @@ export component ExportDialog inherits Rectangle {
     callback browse();
     callback rate-changed(index: int);
     callback codec-changed(index: int);
+    callback hardware-changed(on: bool);
     callback ten-bit-changed(on: bool);
     callback hdr-changed(on: bool);
     callback bitrate-changed(mbps: float);
@@ -701,6 +719,7 @@ export component ExportDialog inherits Rectangle {
                             bitrate-changed(mbps) => { root.bitrate-changed(mbps); }
                             rate-changed(index) => { root.rate-changed(index); }
                             codec-changed(index) => { root.codec-changed(index); }
+                            hardware-changed(on) => { root.hardware-changed(on); }
                             ten-bit-changed(on) => { root.ten-bit-changed(on); }
                             hdr-changed(on) => { root.hdr-changed(on); }
                         }
@@ -740,6 +759,7 @@ export component ExportDialog inherits Rectangle {
                                 bitrate-changed(mbps) => { root.bitrate-changed(mbps); }
                                 rate-changed(index) => { root.rate-changed(index); }
                                 codec-changed(index) => { root.codec-changed(index); }
+                                hardware-changed(on) => { root.hardware-changed(on); }
                                 ten-bit-changed(on) => { root.ten-bit-changed(on); }
                                 hdr-changed(on) => { root.hdr-changed(on); }
                             }
@@ -774,6 +794,7 @@ export component ExportDialog inherits Rectangle {
                                 bitrate-changed(mbps) => { root.bitrate-changed(mbps); }
                                 rate-changed(index) => { root.rate-changed(index); }
                                 codec-changed(index) => { root.codec-changed(index); }
+                                hardware-changed(on) => { root.hardware-changed(on); }
                                 ten-bit-changed(on) => { root.ten-bit-changed(on); }
                                 hdr-changed(on) => { root.hdr-changed(on); }
                             }

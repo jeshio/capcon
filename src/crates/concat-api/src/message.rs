@@ -287,6 +287,9 @@ pub struct ExportSpec {
     /// which H.264 does not carry.
     #[serde(default)]
     pub codec: Option<String>,
+    /// Prefer software compression. Hardware first when absent.
+    #[serde(default)]
+    pub software: bool,
     /// Ten bits a channel. Eight when absent.
     #[serde(default)]
     pub ten_bit: Option<bool>,

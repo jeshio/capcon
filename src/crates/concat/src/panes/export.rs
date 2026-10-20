@@ -35,6 +35,7 @@ pub enum ExportMsg {
     NameEdited(String),
     RateChanged(i32),
     CodecChanged(i32),
+    HardwareChanged(bool),
     TenBitChanged(bool),
     /// For an HDR timeline: written HDR (true), or tone-mapped to SDR.
     HdrChanged(bool),
@@ -78,6 +79,7 @@ pub struct ExportPane {
     pub custom: bool,
     /// Index into `VideoCodec::ALL`.
     pub codec: usize,
+    pub hardware: bool,
     pub ten_bit: bool,
     /// An HDR timeline written tone-mapped to SDR rather than as it is.
     pub sdr: bool,
@@ -110,6 +112,7 @@ impl Default for ExportPane {
             rate: 0,
             custom: false,
             codec: 0,
+            hardware: true,
             ten_bit: false,
             sdr: false,
             bitrate: 8000,
@@ -152,6 +155,7 @@ impl ExportPane {
                     self.codec = index;
                 }
             }
+            ExportMsg::HardwareChanged(on) => self.hardware = on,
             ExportMsg::TenBitChanged(on) => self.ten_bit = on,
             ExportMsg::HdrChanged(on) => self.sdr = !on,
             ExportMsg::BitrateChanged(mbps) => {
@@ -447,6 +451,7 @@ impl ExportPane {
             crf: EXPORT_CRF,
             preset: "veryfast".into(),
             codec: self.codec(studio),
+            software: !self.hardware,
             ten_bit: self.deep(studio),
             rate_mode: concat_media::RateMode::Average,
             bitrate_kbps: self.target_kbps(studio),
@@ -485,11 +490,16 @@ impl ExportPane {
         spawn(
             move || {
                 let job = job;
+                let preparing = std::time::Instant::now();
                 request.clips.extend(
                     titles
                         .clips_cancellable(&project, frame_w, frame_h, job.cancel_flag())
                         .into_iter()
                         .map(|title| title.clip),
+                );
+                log::info!(
+                    "export: title preparation {:.3}s",
+                    preparing.elapsed().as_secs_f64()
                 );
                 export::run_on(&request, compositor, job.cancel_flag(), |progress| {
                     let fraction = if progress.total > 0 {
@@ -579,6 +589,8 @@ impl ExportPane {
                 .iter()
                 .position(|codec| *codec == self.codec(studio))
                 .unwrap_or(0) as i32,
+            hardware: self.hardware,
+            hardware_choice: !cfg!(any(target_os = "ios", target_os = "android")),
             h264_encodable: concat_media::VideoCodec::H264.encodable(),
             hevc_encodable: concat_media::VideoCodec::Hevc.encodable(),
             av1_encodable: concat_media::VideoCodec::Av1.encodable(),
@@ -612,7 +624,7 @@ impl ExportPane {
                         .to_owned(),
                     );
                 }
-                if codec.hardware_encoded(true, self.deep(studio)) {
+                if codec.hardware_encoded(self.hardware, self.deep(studio)) {
                     words.push(format!("· {}", t("export.hardware")));
                 }
                 words.join(" ")

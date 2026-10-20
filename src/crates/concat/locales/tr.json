@@ -265,6 +265,7 @@
   "export.format": "Biçim",
   "export.halfTheSize": "Yarı boyut",
   "export.hardware": "donanım",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "Ses karıştırılıyor",
   "export.nameNeedsToBeAFileName": "Ad bir dosya adı olmalı: boş olmamalı ve / \\ : * ? \" < > | içermemeli",
   "export.notOnThisDevice": "Bu cihazda yok",

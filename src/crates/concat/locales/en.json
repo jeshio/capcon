@@ -265,6 +265,7 @@
   "export.format": "Format",
   "export.halfTheSize": "Half the size",
   "export.hardware": "hardware",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "Mixing audio",
   "export.nameNeedsToBeAFileName": "The name has to be a file name: not empty, and none of / \\ : * ? \" < > |",
   "export.notOnThisDevice": "Not on this device",

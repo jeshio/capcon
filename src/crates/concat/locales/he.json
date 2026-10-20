@@ -265,6 +265,7 @@
   "export.format": "פורמט",
   "export.halfTheSize": "חצי מהגודל",
   "export.hardware": "חומרה",
+  "export.hardwareEncoding": "Hardware acceleration",
   "export.mixingAudio": "מערבב שמע",
   "export.nameNeedsToBeAFileName": "השם חייב להיות שם קובץ: לא ריק, ובלי אף אחד מהתווים / \\ : * ? \" < > |",
   "export.notOnThisDevice": "לא במכשיר הזה",
