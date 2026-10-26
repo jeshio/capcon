@@ -71,25 +71,9 @@ on:
       ANDROID_KEY_PASSWORD:
         description: The key's own password; the keystore's when unset
         required: false
-  pull_request:
-  # Every push to main, so main is known to build for phones; a push that
-  # changes only words for people to read builds nothing.
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - "audit/**"
-      - "scripts/readme/**"
-  workflow_dispatch:
-
-# Keyed by the calling workflow too, so a call from a release never shares
-# a group with a pull request's run. A pull request's run, or a push's, is
-# superseded by the next push; a release's, or one started by hand, runs
-# to the end.
 concurrency:
   group: mobile-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -269,6 +253,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          retention-days: 7
           # Concat-* is what a release publishes; the emulator's APK is
           # named so it never is.
           name: ${{ matrix.ship && 'Concat-android-arm64' || 'smoke-apk-android-x86_64' }}
@@ -337,6 +322,7 @@ jobs:
         if: always()
         timeout-minutes: 10
         with:
+          retention-days: 7
           name: smoke-android-api${{ matrix.api }}
           path: smoke-android/
           if-no-files-found: warn
@@ -441,6 +427,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          retention-days: 7
           name: Concat-ios-arm64
           path: stage/*
           if-no-files-found: error
@@ -557,6 +544,8 @@ jobs:
         if: always()
         timeout-minutes: 10
         with:
+          retention-days: 7
           name: smoke-ios-simulator
           path: smoke-ios/
           if-no-files-found: warn
+
