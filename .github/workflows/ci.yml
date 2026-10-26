@@ -1,7 +1,7 @@
 name: CI
 
-# The engine's tests and lints on every push and pull request. The bundles
-# are built by release.yml, on a tag; see that file.
+# Release verification only: release.yml calls these engine tests and lints
+# before building and publishing the desktop and phone bundles.
 #
 # Every action is pinned to a commit, with the tag it was in a comment
 # beside it: a tag can be moved to other code after a run has trusted it,
@@ -9,13 +9,6 @@ name: CI
 # The prebuilt libraries the jobs download are pinned the same way, by
 # digest, in scripts/ci/deps.lock.
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
-  # release.yml runs this before it builds anything: a tag on a red tree
-  # is not a release. It names the tag, because a release started by hand
-  # runs on main, and main is not what it builds.
   workflow_call:
     inputs:
       ref:
@@ -23,13 +16,10 @@ on:
         type: string
         default: ""
 
-# Keyed on what is tested, so a release testing its tag and a push to
-# main never cancel each other. Only a pull request's run is cancelled by
-# the next push to it: a run on main is the record of whether main is
-# green, and cancelling it leaves a gap where the answer should be.
+# Keep release checks serial for the same source; ordinary pushes do not start them.
 concurrency:
   group: ci-${{ inputs.ref || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   engine:
@@ -203,6 +193,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          retention-days: 7
           name: test-report-linux
           path: |
             src/target/nextest/ci/*.xml
@@ -396,8 +387,10 @@ jobs:
         if: failure() && runner.os == 'Windows'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          retention-days: 7
           name: test-report-windows
           path: |
             src/target/nextest/ci/*.xml
             src/nextest-*.log
           if-no-files-found: ignore
+
